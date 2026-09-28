@@ -7,35 +7,91 @@
  * layer images); what reacts to the user is set here, in the card's YAML:
  *
  *   type: custom:gungors-floor-card
- *   floor: zemin_kat                  # folder under base
+ *   floor: kat0                       # folder under base (the Home Assistant floor id)
  *   base: /local/gungors_floor/       # optional
  *   light_gain: 1                     # optional: render gain of a light at 100 % brightness
+ *   dock_radius: 370                 # optional: size (model px) of the control dock in the bottom-left corner
  *   entities:                         # lamps/covers of the model that react to tap/hold (hover glow)
  *     - entity: light.salon_light     # default tap_action: toggle (lights) / more-info (others)
  *     - entity: cover.salon_cover     # default hold_action: more-info
  *       tap_action: {action: perform-action, perform_action: script.cover_tap, data: {cover: cover.salon_cover}}
  *     - entity: cover.garaj_door
- *       slider: true                  # a slider in the model's UI area (name: optional label)
+ *       slider: true                  # a slider in the dock list (name: optional label)
  *
  * Without `entities` every lamp and cover of the model reacts with the default actions.
  * The picture always follows Home Assistant for all of them: cover position, light on/off +
  * brightness, sun above/below the horizon. An entity that does not exist in Home Assistant (e.g. a
  * cover not integrated yet) only changes the picture (tap toggles it, a slider moves it).
  */
-const CARD_VERSION = "1.2.0";
+const CARD_VERSION = "1.3.0";
 const MODEL_FORMAT = 2;              // model.json layout written by build_floor_html.py
 const HOLD_MS = 500;
 
+// modes of the dock, one round button each (on the rim, from the bottom edge up)
+const DOCK_MODES = [
+  { id: "lights", icon: "mdi:lightbulb-group", title: "lights" },
+  { id: "covers", icon: "mdi:curtains", title: "covers" },
+  { id: "sun", icon: "mdi:weather-sunny", title: "sun" },
+  { id: "floors", icon: "mdi:home-floor-0", title: "floors" },
+];
+
+const DOCK_CSS = `
+  ha-card{overflow:hidden;background:#3a3a3a}
+  .wrap{position:relative;width:100%}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .msg{position:absolute;left:12px;top:10px;color:#e6e6e6;font-size:13px}
+  .dock{position:absolute;left:0;transform-origin:0 0;font:15px "Segoe UI",Roboto,Arial,sans-serif;color:#e8f4ff;
+        user-select:none;-webkit-user-select:none}
+  .disc,.gloss{position:absolute;left:0;bottom:0;box-sizing:border-box}
+  .disc{width:100%;height:100%;border-top-right-radius:100%;
+        background:radial-gradient(circle at 0% 100%,#071d45 0 52%,#0d3b85 64%,#1d6fd6 80%,#3b95f0 89%,#0b3a86 100%);
+        border-top:4px solid #a8dcff;border-right:4px solid #a8dcff;
+        box-shadow:0 0 22px rgba(90,180,255,.55),inset 0 0 30px rgba(0,20,60,.6)}
+  .gloss{width:70%;height:70%;border-top-right-radius:100%;border-top:2px solid rgba(160,215,255,.35);
+         border-right:2px solid rgba(160,215,255,.35);pointer-events:none}
+  .btn{position:absolute;width:70px;height:70px;border-radius:50%;padding:0;cursor:pointer;outline:none;
+       border:3px solid #e6f5ff;color:#fff;display:flex;align-items:center;justify-content:center;
+       background:radial-gradient(circle at 35% 28%,#e4f4ff 0 7%,#63b4ff 20%,#1a67d1 58%,#0a2f70 100%);
+       box-shadow:0 4px 10px rgba(0,0,0,.55),0 0 12px rgba(120,200,255,.55);transition:transform .15s,box-shadow .15s}
+  .btn ha-icon{--mdc-icon-size:34px;filter:drop-shadow(0 1px 1px rgba(0,0,0,.6))}
+  .btn:hover{transform:scale(1.08)}
+  .btn.active{border-color:#ffd66b;box-shadow:0 4px 10px rgba(0,0,0,.55),0 0 20px rgba(255,214,107,.85)}
+  .screen{position:absolute;left:14px;bottom:14px;width:206px;height:182px;box-sizing:border-box;padding:8px 10px;
+          border-radius:16px;border:2px solid #5fb4ff;background:linear-gradient(#051a40,#0a2c63);
+          box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 10px rgba(80,170,255,.4);display:flex;flex-direction:column}
+  .top{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid rgba(95,180,255,.35);padding-bottom:3px}
+  .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
+  .date{font-size:12px;color:#9fcfff}
+  .title{font-size:12px;letter-spacing:1px;color:#ffd66b;margin:4px 0 2px;text-transform:uppercase}
+  .list{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#3b95f0 transparent}
+  .row{display:flex;align-items:center;gap:6px;height:25px;padding:0 4px;border-radius:6px}
+  .row.act{cursor:pointer}
+  .row.act:hover{background:rgba(95,180,255,.18)}
+  .row ha-icon{--mdc-icon-size:18px;color:#6f93c2;flex:none}
+  .row.on ha-icon{color:#ffd66b;filter:drop-shadow(0 0 4px rgba(255,214,107,.8))}
+  .row .lbl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .val{font:14px "Consolas","Courier New",monospace;color:#7dff9a}
+  .row input{width:74px;margin:0;accent-color:#ffd66b}
+  .row.local .lbl{font-style:italic;color:#bcd3ee}
+  .row.dim{opacity:.45}
+`;
+
 class GungorsFloorCard extends HTMLElement {
   setConfig(config) {
-    if (!config.floor) throw new Error("gungors-floor-card: 'floor' is required (e.g. zemin_kat)");
-    this._config = { base: "/local/gungors_floor/", light_gain: 1, ...config };
+    if (!config.floor) throw new Error("gungors-floor-card: 'floor' is required (e.g. kat0)");
+    this._config = { base: "/local/gungors_floor/", light_gain: 1, dock_radius: 370, ...config };
     if (!this._config.base.endsWith("/")) this._config.base += "/";
     const ents = config.entities;
     if (ents != null && !Array.isArray(ents)) throw new Error("gungors-floor-card: 'entities' must be a list");
     this._ents = ents == null ? null
       : new Map(ents.map((e) => (typeof e === "string" ? { entity: e } : e)).map((e) => [e.entity, e]));
   }
+
+  connectedCallback() {
+    if (this._M && this._panel.firstChild && !this._clockTimer) this._clockTimer = setInterval(() => this._clock(), 15000);
+  }
+
+  disconnectedCallback() { clearInterval(this._clockTimer); this._clockTimer = null; }
 
   getCardSize() { return 9; }
   getGridOptions() { return { columns: "full", min_rows: 6 }; }
@@ -49,22 +105,11 @@ class GungorsFloorCard extends HTMLElement {
   // ------------------------------------------------------------------ setup
   async _init() {
     const root = this.attachShadow({ mode: "open" });
-    root.innerHTML = `<style>
-        ha-card{overflow:hidden;background:#3a3a3a}
-        .wrap{position:relative;width:100%}
-        canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
-        .panel{position:absolute;transform-origin:0 0;background:rgba(30,30,30,.78);border-radius:8px;padding:10px 12px;
-               box-sizing:border-box;color:#e6e6e6;font:12px "Segoe UI",Roboto,Arial,sans-serif}
-        .grp{color:#9a9a9a;font-size:11px;letter-spacing:.5px;margin:4px 0 2px}
-        .row{display:grid;gap:10px;align-items:center;height:24px;padding-left:8px}
-        .row input{width:100%;accent-color:#e0a45a;margin:0}
-        .row.local span{font-style:italic;color:#bdbdbd}
-        .msg{position:absolute;left:12px;top:10px;color:#e6e6e6;font-size:13px}
-      </style>
-      <ha-card><div class="wrap"><canvas></canvas><div class="panel"></div><div class="msg">loading…</div></div></ha-card>`;
+    root.innerHTML = `<style>${DOCK_CSS}</style>
+      <ha-card><div class="wrap"><canvas></canvas><div class="dock"></div><div class="msg">loading…</div></div></ha-card>`;
     this._wrap = root.querySelector(".wrap");
     this._cv = root.querySelector("canvas");
-    this._panel = root.querySelector(".panel");
+    this._panel = root.querySelector(".dock");
     this._msg = root.querySelector(".msg");
     const dir = this._config.base + this._config.floor + "/";
     try {
@@ -115,31 +160,28 @@ class GungorsFloorCard extends HTMLElement {
       .filter((g) => g.rows.length);
   }
 
+  // ------------------------------------------------------------------ dock (quarter-disc control panel, bottom left)
+  // Round mode buttons on the rim, a "screen" in the corner with a clock and the list of the active mode.
   _buildPanel() {
-    const M = this._M, ui = M.ui, groups = this._groups();
-    const labels = [].concat(...groups.map((g) => g.rows.map((r) => r.label)));
-    const lw = 7 * Math.max(8, ...labels.map((l) => l.length)) + 4;
-    let html = "";
-    for (const g of groups) {
-      html += `<div class="grp">${g.title}</div>`;
-      for (const r of g.rows) {
-        const ent = this._entityOf(r.key);
-        const local = !this._state(ent);
-        html += `<label class="row${local ? " local" : ""}" style="grid-template-columns:${lw}px 1fr" title="${ent}${local ? " (not in Home Assistant: local only)" : ""}">
-                   <span>${r.label}</span><input type="range" min="0" max="100" value="${Math.round(r.init * 100)}" data-k="${r.key}"></label>`;
-        this._val[r.key] = r.init;
-      }
-    }
-    this._panel.innerHTML = html;
-    if (!groups.length) this._panel.style.display = "none";
-    this._panel.style.left = (ui.x / M.W * 100) + "%";
-    this._panel.style.top = (ui.y / M.H * 100) + "%";
-    this._panel.style.width = ui.width + "px";
-    this._panel.querySelectorAll("input").forEach((inp) => {
-      const k = inp.dataset.k;
-      inp.addEventListener("input", () => { this._dragging[k] = true; this._val[k] = inp.value / 100; this._redraw(); });
-      inp.addEventListener("change", () => { this._dragging[k] = false; this._val[k] = inp.value / 100; this._command(k, this._val[k]); this._redraw(); });
-    });
+    const M = this._M, R = this._config.dock_radius, d = this._panel;
+    for (const g of this._groups()) for (const r of g.rows) this._val[r.key] = r.init;
+    this._mode = this._mode || "lights";
+    const rb = R - 46, angles = [16, 37, 58, 79];
+    const btns = DOCK_MODES.map((m, i) => {
+      const a = angles[i] * Math.PI / 180;
+      return `<button class="btn" data-mode="${m.id}" title="${m.title}"
+                style="left:${rb * Math.cos(a) - 35}px;top:${R - rb * Math.sin(a) - 35}px"><ha-icon icon="${m.icon}"></ha-icon></button>`;
+    }).join("");
+    d.style.width = d.style.height = R + "px";
+    d.style.top = ((M.H - R) / M.H * 100) + "%";
+    d.innerHTML = `<div class="disc"></div><div class="gloss"></div>${btns}
+      <div class="screen"><div class="top"><span class="clock"></span><span class="date"></span></div>
+        <div class="title"></div><div class="list"></div></div>`;
+    d.querySelectorAll(".btn").forEach((b) => b.addEventListener("click", () => { this._mode = b.dataset.mode; this._renderList(true); }));
+    this._clock();
+    clearInterval(this._clockTimer);
+    this._clockTimer = setInterval(() => this._clock(), 15000);
+    this._renderList(true);
     this._fitPanel();
   }
 
@@ -147,6 +189,81 @@ class GungorsFloorCard extends HTMLElement {
     if (!this._M) return;
     const s = this._wrap.clientWidth / this._M.W;
     this._panel.style.transform = `scale(${s})`;
+  }
+
+  _clock() {
+    const now = new Date(), d = this._panel;
+    d.querySelector(".clock").textContent = now.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+    d.querySelector(".date").textContent = now.toLocaleDateString("tr-TR", { day: "numeric", month: "short", weekday: "short" });
+  }
+
+  // rows of the active mode; rebuilt when the mode or a listed state changes (not while a slider is dragged)
+  _renderList(force) {
+    if (!this._M || (!force && Object.values(this._dragging).some(Boolean))) return;
+    const M = this._M, mode = this._mode, short = (e) => e.split(".").slice(1).join(".") || e;
+    const st = (e) => this._state(e);
+    let rows = [];
+    if (mode === "lights") {
+      M.fixtures.forEach((f, i) => {
+        const l = M.lights.find((x) => x.id === f.id), s = st(l.entity), conf = this._conf(l.entity);
+        const on = s ? s.state === "on" : (this._val["light:" + l.id] ?? 1) > 0;
+        const b = s && s.attributes.brightness != null ? Math.round(s.attributes.brightness / 2.55) + "%" : (on ? "on" : "off");
+        rows.push({ entity: l.entity, pick: M.covers.length + i, icon: on ? "mdi:lightbulb-on" : "mdi:lightbulb-outline", on,
+                    label: (conf && conf.name) || short(l.entity), value: on ? b : "off", key: "light:" + l.id, conf, kind: "light", it: l });
+      });
+    } else if (mode === "covers") {
+      M.covers.forEach((c, i) => {
+        const s = st(c.entity), conf = this._conf(c.entity), t = this._val["open:" + c.id] ?? 0;
+        rows.push({ entity: c.entity, pick: i, icon: t > 0.02 ? "mdi:curtains" : "mdi:curtains-closed", on: t > 0.02,
+                    label: (conf && conf.name) || short(c.entity), value: Math.round(t * 100) + "%", key: "open:" + c.id, conf, kind: "cover", it: c });
+      });
+    } else if (mode === "sun") {
+      const s = st("sun.sun"), a = s ? s.attributes : {};
+      const t = (v) => v ? new Date(v).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" }) : "-";
+      rows = [{ icon: s && s.state === "above_horizon" ? "mdi:weather-sunny" : "mdi:weather-night", on: s && s.state === "above_horizon",
+                label: "sun", value: s ? (s.state === "above_horizon" ? "up" : "down") : "-" },
+              { icon: "mdi:angle-acute", label: "elevation", value: a.elevation != null ? Math.round(a.elevation) + "°" : "-" },
+              { icon: "mdi:weather-sunset-down", label: "sunset", value: t(a.next_setting) },
+              { icon: "mdi:weather-sunset-up", label: "sunrise", value: t(a.next_rising) }];
+    } else {
+      const floors = (this._hass && this._hass.floors) ? Object.values(this._hass.floors).sort((x, y) => (x.level ?? 0) - (y.level ?? 0)) : [];
+      rows = (floors.length ? floors : [{ floor_id: this._config.floor, name: this._config.floor }]).map((f) => {
+        const cur = f.floor_id === this._config.floor;
+        return { icon: f.icon || "mdi:home-floor-" + (f.level ?? 0), on: cur, label: f.name, value: cur ? "●" : "", dim: !cur };
+      });
+    }
+    const sig = mode + JSON.stringify(rows.map((r) => [r.label, r.value, r.on]));
+    if (!force && sig === this._listSig) return;
+    this._listSig = sig;
+    const d = this._panel, title = DOCK_MODES.find((m) => m.id === mode).title;
+    d.querySelectorAll(".btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+    d.querySelector(".title").textContent = title;
+    d.querySelector(".list").innerHTML = rows.map((r, i) => {
+      const slider = r.conf && r.conf.slider;
+      const local = r.entity && !st(r.entity);
+      return `<div class="row${r.on ? " on" : ""}${r.dim ? " dim" : ""}${local ? " local" : ""}${r.entity ? " act" : ""}" data-i="${i}"
+                   title="${r.entity || ""}${local ? " (not in Home Assistant: local only)" : ""}">
+                <ha-icon icon="${r.icon}"></ha-icon><span class="lbl">${r.label}</span>
+                ${slider ? `<input type="range" min="0" max="100" value="${Math.round((this._val[r.key] ?? 0) * 100)}" data-k="${r.key}">`
+                         : `<span class="val">${r.value}</span>`}</div>`;
+    }).join("");
+    this._rows = rows;
+    d.querySelectorAll(".row.act").forEach((el) => {
+      const r = rows[+el.dataset.i];
+      el.addEventListener("mouseenter", () => { this._hover = r.pick; this._redraw(); });
+      el.addEventListener("mouseleave", () => { this._hover = -1; this._redraw(); });
+      if (!r.conf || r.conf.slider) return;
+      let timer = null, held = false;
+      el.addEventListener("pointerdown", () => { held = false; timer = setTimeout(() => { held = true; this._run(r.pick, "hold"); }, HOLD_MS); });
+      el.addEventListener("pointerup", () => { clearTimeout(timer); if (!held) this._run(r.pick, "tap"); });
+      el.addEventListener("pointerleave", () => clearTimeout(timer));
+      el.addEventListener("contextmenu", (e) => e.preventDefault());
+    });
+    d.querySelectorAll("input").forEach((inp) => {
+      const k = inp.dataset.k;
+      inp.addEventListener("input", () => { this._dragging[k] = true; this._val[k] = inp.value / 100; this._redraw(); });
+      inp.addEventListener("change", () => { this._dragging[k] = false; this._val[k] = inp.value / 100; this._command(k, this._val[k]); this._redraw(); this._renderList(true); });
+    });
   }
 
   _entityOf(key) {
@@ -180,6 +297,7 @@ class GungorsFloorCard extends HTMLElement {
       set("light:" + l.id, st.state === "on" ? (b != null ? b / 255 : 1) : 0);
     }
     if (changed) this._redraw();
+    this._renderList(false);
   }
 
   _gain(l) {
@@ -358,6 +476,7 @@ class GungorsFloorCard extends HTMLElement {
       const inp = this._panel.querySelector(`input[data-k="${key}"]`);
       if (inp) inp.value = this._val[key] * 100;
       this._redraw();
+      this._renderList(true);
       return;
     }
     const conf = this._conf(it.entity) || {};
