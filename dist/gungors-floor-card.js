@@ -19,11 +19,13 @@
  *       slider: true                  # a slider in the dock list (name: optional label)
  *
  * Without `entities` every lamp and cover of the model reacts with the default actions.
+ * The standalone page of the floor (build_floor_html.py -> svg/<floor>.html) runs this same card with
+ * the model passed in `model` and a stand-in hass whose entities start at 100 %.
  * The picture always follows Home Assistant for all of them: cover position, light on/off +
  * brightness, sun above/below the horizon. An entity that does not exist in Home Assistant (e.g. a
  * cover not integrated yet) only changes the picture (tap toggles it, a slider moves it).
  */
-const CARD_VERSION = "1.3.0";
+const CARD_VERSION = "1.4.0";
 const MODEL_FORMAT = 2;              // model.json layout written by build_floor_html.py
 const HOLD_MS = 500;
 
@@ -113,7 +115,8 @@ class GungorsFloorCard extends HTMLElement {
     this._msg = root.querySelector(".msg");
     const dir = this._config.base + this._config.floor + "/";
     try {
-      this._M = await (await fetch(dir + "model.json?v=" + CARD_VERSION, { cache: "no-cache" })).json();
+      this._M = this._config.model      // preloaded by the standalone page (images as data URIs in image_urls)
+        || await (await fetch(dir + "model.json?v=" + CARD_VERSION, { cache: "no-cache" })).json();
     } catch (e) { this._msg.textContent = "model.json not found: " + dir; return; }
     const M = this._M;
     if (M.format !== MODEL_FORMAT) {
@@ -375,7 +378,7 @@ class GungorsFloorCard extends HTMLElement {
         if (--this._left === 0) { this._msg.remove(); this._redraw(); }
       };
       im.onerror = () => { this._msg.textContent = "missing layer: " + name; };
-      im.src = dir + name + "?v=" + CARD_VERSION;
+      im.src = M.image_urls ? M.image_urls[i] : dir + name + "?v=" + CARD_VERSION;
     });
   }
 
