@@ -3,18 +3,27 @@
  * with live lighting (WebGL2). Data comes from build_floor_html.py (svg/<floor>_card/, deployed to
  * /config/www/gungors_floor/<floor>/ by deploy.ps1).
  *
+ * Like a picture-elements / ha-floorplan dashboard, the folder is only the picture (model.json +
+ * layer images); what reacts to the user is set here, in the card's YAML:
+ *
  *   type: custom:gungors-floor-card
  *   floor: zemin_kat                  # folder under base
  *   base: /local/gungors_floor/       # optional
  *   light_gain: 1                     # optional: render gain of a light at 100 % brightness
+ *   entities:                         # lamps/covers of the model that react to tap/hold (hover glow)
+ *     - entity: light.salon_light     # default tap_action: toggle (lights) / more-info (others)
+ *     - entity: cover.salon_cover     # default hold_action: more-info
+ *       tap_action: {action: perform-action, perform_action: script.cover_tap, data: {cover: cover.salon_cover}}
+ *     - entity: cover.garaj_door
+ *       slider: true                  # a slider in the model's UI area (name: optional label)
  *
- * State comes from Home Assistant: cover position, light on/off + brightness, sun above/below the
- * horizon. Like the floorplan dashboard, a tap and a hold on a lamp or cover run its Lovelace
- * actions (model.json: tap/hold, from config.json home_assistant), e.g. tap toggles a light and
- * hold opens its more-info dialog. Only entities marked ha_slider get a slider; one that does not
- * exist in Home Assistant (e.g. a cover not integrated yet) only changes the picture.
+ * Without `entities` every lamp and cover of the model reacts with the default actions.
+ * The picture always follows Home Assistant for all of them: cover position, light on/off +
+ * brightness, sun above/below the horizon. An entity that does not exist in Home Assistant (e.g. a
+ * cover not integrated yet) only changes the picture (tap toggles it, a slider moves it).
  */
-const CARD_VERSION = "1.1.0";
+const CARD_VERSION = "1.2.0";
+const MODEL_FORMAT = 2;              // model.json layout written by build_floor_html.py
 const HOLD_MS = 500;
 
 class GungorsFloorCard extends HTMLElement {
@@ -22,6 +31,10 @@ class GungorsFloorCard extends HTMLElement {
     if (!config.floor) throw new Error("gungors-floor-card: 'floor' is required (e.g. zemin_kat)");
     this._config = { base: "/local/gungors_floor/", light_gain: 1, ...config };
     if (!this._config.base.endsWith("/")) this._config.base += "/";
+    const ents = config.entities;
+    if (ents != null && !Array.isArray(ents)) throw new Error("gungors-floor-card: 'entities' must be a list");
+    this._ents = ents == null ? null
+      : new Map(ents.map((e) => (typeof e === "string" ? { entity: e } : e)).map((e) => [e.entity, e]));
   }
 
   getCardSize() { return 9; }
@@ -58,6 +71,14 @@ class GungorsFloorCard extends HTMLElement {
       this._M = await (await fetch(dir + "model.json?v=" + CARD_VERSION, { cache: "no-cache" })).json();
     } catch (e) { this._msg.textContent = "model.json not found: " + dir; return; }
     const M = this._M;
+    if (M.format !== MODEL_FORMAT) {
+      this._msg.textContent = `model.json format ${M.format} is not supported by gungors-floor-card ${CARD_VERSION} (needs ${MODEL_FORMAT}): update the card or rebuild the floor`;
+      return;
+    }
+    if (this._ents) {
+      const known = new Set([...M.lights, ...M.covers].map((x) => x.entity));
+      for (const e of this._ents.keys()) if (!known.has(e)) console.warn(`gungors-floor-card: ${e} is not in ${dir}model.json`);
+    }
     this._wrap.style.aspectRatio = M.W + " / " + M.H;
     this._cv.width = M.W; this._cv.height = M.H;
     this._val = {};
@@ -78,12 +99,28 @@ class GungorsFloorCard extends HTMLElement {
 
   _state(entity) { return this._hass && this._hass.states[entity]; }
 
+  // card YAML of an entity (null: it does not react to the user)
+  _conf(entity) {
+    if (!this._ents) return { entity };
+    return this._ents.get(entity) || null;
+  }
+
+  // slider rows of the entities with `slider: true`, grouped like the standalone page
+  _groups() {
+    const M = this._M, short = (e) => e.split(".").slice(1).join(".") || e;
+    const rows = (list, kind, init) => list.filter((x) => (this._conf(x.entity) || {}).slider)
+      .map((x) => ({ key: kind + ":" + x.id, label: this._conf(x.entity).name || short(x.entity), init: init(x) }));
+    return [{ title: "covers:", rows: rows(M.covers, "open", () => 0) },
+            { title: "lights:", rows: rows(M.lights.filter((l) => !l.entity.startsWith("sun.")), "light", (l) => 1 / (l.max || 1)) }]
+      .filter((g) => g.rows.length);
+  }
+
   _buildPanel() {
-    const M = this._M, ui = M.ui;
-    const labels = [].concat(...M.groups.map((g) => g.rows.map((r) => r.label)));
+    const M = this._M, ui = M.ui, groups = this._groups();
+    const labels = [].concat(...groups.map((g) => g.rows.map((r) => r.label)));
     const lw = 7 * Math.max(8, ...labels.map((l) => l.length)) + 4;
     let html = "";
-    for (const g of M.groups) {
+    for (const g of groups) {
       html += `<div class="grp">${g.title}</div>`;
       for (const r of g.rows) {
         const ent = this._entityOf(r.key);
@@ -94,7 +131,7 @@ class GungorsFloorCard extends HTMLElement {
       }
     }
     this._panel.innerHTML = html;
-    if (!M.groups.length) this._panel.style.display = "none";
+    if (!groups.length) this._panel.style.display = "none";
     this._panel.style.left = (ui.x / M.W * 100) + "%";
     this._panel.style.top = (ui.y / M.H * 100) + "%";
     this._panel.style.width = ui.width + "px";
@@ -267,10 +304,10 @@ class GungorsFloorCard extends HTMLElement {
     const inr = (e8, iv) => { if (e8 < 8) return false; const u = (e8 / 255 - 0.05) / 0.9; return (u >= iv[0] && u <= iv[1]) || (u >= iv[2] && u <= iv[3]); };
     for (let n = 0; n < M.covers.length; n++) {
       const c = M.covers[n], a = this._cpu[c.default], p = this._cpu[c.param];
-      if (a && p && a[i] > 100 && inr(p[i], this._visible(c, this._val["open:" + c.id] ?? 0))) return n;
+      if (this._conf(c.entity) && a && p && a[i] > 100 && inr(p[i], this._visible(c, this._val["open:" + c.id] ?? 0))) return n;
     }
     for (let f = 0; f < M.fixtures.length; f++) {
-      const fa = this._cpu[M.fixtures[f].layer]; if (!fa) continue;
+      const fa = this._cpu[M.fixtures[f].layer]; if (!fa || !this._conf(this._item(M.covers.length + f).it?.entity)) continue;
       for (let dy = -6; dy <= 6; dy++) for (let dx = -6; dx <= 6; dx++) {
         const xx = x + dx, yy = y + dy;
         if (xx >= 0 && yy >= 0 && xx < M.W && yy < M.H && fa[yy * M.W + xx] > 100) return M.covers.length + f;
@@ -323,7 +360,9 @@ class GungorsFloorCard extends HTMLElement {
       this._redraw();
       return;
     }
-    const act = it[which] || { action: "none" };
+    const conf = this._conf(it.entity) || {};
+    const act = conf[which + "_action"]
+      || (which === "tap" ? { action: kind === "light" ? "toggle" : "more-info" } : { action: "more-info" });
     if (navigator.vibrate && act.action !== "none") navigator.vibrate(which === "hold" ? 50 : 10);
     this._action(act, it.entity);
   }
