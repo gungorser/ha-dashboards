@@ -1,7 +1,7 @@
 # Gungors Cards
 
 Custom Lovelace cards for the Gungor house. Installed through HACS as a custom repository
-(category **Dashboard**); HACS registers `ha-gungors-cards.js`, which loads all cards below.
+(category **Dashboard**); HACS registers `ha-dashboards.js`, which loads all cards below.
 
 | Card | Used by | What it does |
 |---|---|---|
@@ -19,7 +19,7 @@ light_gain: 1                     # optional
 ```
 
 The floor data (`model.json` + layer images) is not part of this repository. It is build output of
-the Blender project (`gungors_home`: `src/build_floor_html.py`) and is copied to
+the Blender project (`ha-floorplan`: `src/build_floor_html.py`) and is copied to
 `/config/www/gungors_floor/<floor>/` by its `src/ha/deploy.ps1`.
 
 ## Releasing
