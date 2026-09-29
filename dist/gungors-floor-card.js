@@ -25,7 +25,7 @@
  * brightness, sun above/below the horizon. An entity that does not exist in Home Assistant (e.g. a
  * cover not integrated yet) only changes the picture (tap toggles it, a slider moves it).
  */
-const CARD_VERSION = "1.4.0";
+const CARD_VERSION = "1.10.0";
 const MODEL_FORMAT = 2;              // model.json layout written by build_floor_html.py
 const HOLD_MS = 500;
 
@@ -37,11 +37,24 @@ const DOCK_MODES = [
   { id: "floors", icon: "mdi:home-floor-0", title: "floors" },
 ];
 
+// point in polygon (even-odd), polygon as [[x, y], ...]
+function inPoly(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
 const DOCK_CSS = `
   ha-card{overflow:hidden;background:#3a3a3a}
   .wrap{position:relative;width:100%}
   canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
   .msg{position:absolute;left:12px;top:10px;color:#e6e6e6;font-size:13px}
+  .areas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .areas polygon{fill:none;stroke:rgba(214,180,90,.3);stroke-width:1.5;stroke-linejoin:round;transition:stroke .15s,fill .15s}
+  .areas polygon.hover{stroke:rgba(255,214,107,.8);fill:rgba(255,214,107,.07)}
   .dock{position:absolute;left:0;transform-origin:0 0;font:15px "Segoe UI",Roboto,Arial,sans-serif;color:#e8f4ff;
         user-select:none;-webkit-user-select:none}
   .disc,.gloss{position:absolute;left:0;bottom:0;box-sizing:border-box}
@@ -108,7 +121,7 @@ class GungorsFloorCard extends HTMLElement {
   async _init() {
     const root = this.attachShadow({ mode: "open" });
     root.innerHTML = `<style>${DOCK_CSS}</style>
-      <ha-card><div class="wrap"><canvas></canvas><div class="dock"></div><div class="msg">loading…</div></div></ha-card>`;
+      <ha-card><div class="wrap"><canvas></canvas><svg class="areas"></svg><div class="dock"></div><div class="msg">loading…</div></div></ha-card>`;
     this._wrap = root.querySelector(".wrap");
     this._cv = root.querySelector("canvas");
     this._panel = root.querySelector(".dock");
@@ -132,6 +145,7 @@ class GungorsFloorCard extends HTMLElement {
     this._val = {};
     this._dragging = {};
     this._buildPanel();
+    this._buildAreas();
     new ResizeObserver(() => this._fitPanel()).observe(this._wrap);
     if (!this._initGL()) return;
     this._loadImages(dir);
@@ -159,7 +173,7 @@ class GungorsFloorCard extends HTMLElement {
     const rows = (list, kind, init) => list.filter((x) => (this._conf(x.entity) || {}).slider)
       .map((x) => ({ key: kind + ":" + x.id, label: this._conf(x.entity).name || short(x.entity), init: init(x) }));
     return [{ title: "covers:", rows: rows(M.covers, "open", () => 0) },
-            { title: "lights:", rows: rows(M.lights.filter((l) => !l.entity.startsWith("sun.")), "light", (l) => 1 / (l.max || 1)) }]
+            { title: "lights:", rows: rows(M.lights.filter((l) => !l.role), "light", (l) => 1 / (l.max || 1)) }]
       .filter((g) => g.rows.length);
   }
 
@@ -188,16 +202,31 @@ class GungorsFloorCard extends HTMLElement {
     this._fitPanel();
   }
 
+  // touch areas of the lamps (model.json fixtures[].area): larger than the lamp itself, drawn as a faint outline
+  _buildAreas() {
+    const M = this._M, svg = this._wrap.querySelector(".areas");
+    svg.setAttribute("viewBox", `0 0 ${M.W} ${M.H}`);
+    svg.innerHTML = M.fixtures.map((f, i) => {
+      const l = M.lights.find((x) => x.id === f.id);
+      if (!f.area || !l || !this._conf(l.entity)) return "";
+      return `<polygon data-h="${M.covers.length + i}" points="${f.area.map((p) => p.join(",")).join(" ")}"/>`;
+    }).join("");
+  }
+
   _fitPanel() {
     if (!this._M) return;
     const s = this._wrap.clientWidth / this._M.W;
     this._panel.style.transform = `scale(${s})`;
   }
 
+  // the time the card shows and picks the sun for; the standalone page may set timeOverride (its scene button)
+  _now() { return this.timeOverride ? new Date(this.timeOverride) : new Date(); }
+
   _clock() {
-    const now = new Date(), d = this._panel;
+    const now = this._now(), d = this._panel;
     d.querySelector(".clock").textContent = now.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
     d.querySelector(".date").textContent = now.toLocaleDateString("tr-TR", { day: "numeric", month: "short", weekday: "short" });
+    if (this._M && this._updateSun()) { this._redraw(); this._renderList(true); }     // the sun moves on with the clock
   }
 
   // rows of the active mode; rebuilt when the mode or a listed state changes (not while a slider is dragged)
@@ -228,6 +257,10 @@ class GungorsFloorCard extends HTMLElement {
               { icon: "mdi:angle-acute", label: "elevation", value: a.elevation != null ? Math.round(a.elevation) + "°" : "-" },
               { icon: "mdi:weather-sunset-down", label: "sunset", value: t(a.next_setting) },
               { icon: "mdi:weather-sunset-up", label: "sunrise", value: t(a.next_rising) }];
+      // the light shown in the picture: a sun position (its hour on the reference day) or the street lamps
+      const sn = this._sun || {};
+      rows.push(sn.night ? { icon: "mdi:post-lamp", on: true, label: "picture", value: "gece" }
+                         : { icon: "mdi:sun-clock", on: true, label: "picture", value: sn.phase || "-" });
     } else {
       const floors = (this._hass && this._hass.floors) ? Object.values(this._hass.floors).sort((x, y) => (x.level ?? 0) - (y.level ?? 0)) : [];
       rows = (floors.length ? floors : [{ floor_id: this._config.floor, name: this._config.floor }]).map((f) => {
@@ -293,19 +326,45 @@ class GungorsFloorCard extends HTMLElement {
       set("open:" + c.id, pos != null ? pos / 100 : (st.state === "closed" ? 0 : 1));
     }
     for (const l of M.lights) {
+      if (l.role === "sun" || l.role === "night") continue;      // follow sun.sun and the clock (_sunState)
       const st = this._state(l.entity);
       if (!st) continue;
-      if (l.entity.startsWith("sun.")) { const v = st.state === "above_horizon" ? 1 : 0; if (this._sun !== v) { this._sun = v; changed = true; } continue; }
       const b = st.attributes.brightness;
       set("light:" + l.id, st.state === "on" ? (b != null ? b / 255 : 1) : 0);
     }
+    if (this._updateSun()) changed = true;
     if (changed) this._redraw();
     this._renderList(false);
   }
 
+  // Which sun light shines: the real day (sun.sun next_rising/next_setting, else the reference day) is
+  // scaled onto the reference day the suns were placed for, and the sun with the nearest hour wins.
+  // Below the horizon every sun is off and the night lights (street lamps) are on.
+  _sunState() {
+    const M = this._M, ref = M.sun, suns = M.lights.filter((l) => l.role === "sun");
+    const st = this._state("sun.sun"), a = st ? st.attributes : {};
+    const hours = (d) => d.getHours() + d.getMinutes() / 60, h = hours(this._now());
+    let rise = ref ? ref.sunrise : 6, set = ref ? ref.sunset : 21;
+    if (a.next_rising && a.next_setting) { rise = hours(new Date(a.next_rising)); set = hours(new Date(a.next_setting)); }
+    const up = st ? st.state === "above_horizon" : h >= rise && h < set;
+    if (!up || !suns.length) return { night: true, sun: null, ref: null };
+    const f = Math.min(1, Math.max(0, (h - rise) / Math.max(0.1, set - rise)));
+    const refH = ref ? ref.sunrise + f * (ref.sunset - ref.sunrise) : h;
+    const sun = suns.reduce((b, l) => (Math.abs(l.hour - refH) < Math.abs(b.hour - refH) ? l : b));
+    return { night: false, sun: sun.id, ref: refH, hour: sun.hour, phase: sun.phase || sun.id };
+  }
+
+  _updateSun() {
+    const s = this._sunState(), sig = s.night + ":" + s.sun;
+    if (sig === this._sunSig) return false;
+    this._sunSig = sig; this._sun = s;
+    return true;
+  }
+
   _gain(l) {
     const st = this._state(l.entity);
-    if (l.entity.startsWith("sun.")) return st ? (this._sun ?? 1) : 1;
+    if (l.role === "sun") return this._sun && this._sun.sun === l.id ? 1 : 0;
+    if (l.role === "night") return this._sun && this._sun.night ? 1 : 0;
     const v = this._val["light:" + l.id];
     if (v == null) return st ? (st.state === "on" ? 1 : 0) : 1;     // light without a slider row
     return v * this._config.light_gain;
@@ -359,7 +418,8 @@ class GungorsFloorCard extends HTMLElement {
     const M = this._M, gl = this._gl;
     this._cpu = {};
     const need = {};
-    M.covers.forEach((c) => { need[c.default] = 3; need[c.param] = 0; });
+    // outline of each cover: its outline mask (the rectangle it closes) or else its param layer (whole silhouette)
+    M.covers.forEach((c) => { if (c.outline != null) need[c.outline] = 3; else need[c.param] = 0; });
     M.fixtures.forEach((f) => { need[f.layer] = 3; });
     const c2 = document.createElement("canvas"); c2.width = M.W; c2.height = M.H;
     const x2 = c2.getContext("2d", { willReadFrequently: true });
@@ -385,6 +445,7 @@ class GungorsFloorCard extends HTMLElement {
   // parts of a cover's plane covered when opened by t, for the light maps (U, or V for a track door)
   _covered(c, t) {
     if (c.motion === "track") return [Math.min(1, t * c.travel / c.H), 1, 2, 2];
+    if (c.motion === "roll") return t >= 0.999 ? [2, 2, 2, 2] : [t, 1, 2, 2];      // fabric left between t and the top
     const s = 1 - (1 - c.min_scale) * t;
     if (c.motion === "both_sides") { const f = s * (c.L / 2 + c.overlap) / c.L; return [0, f, 1 - f, 1]; }
     if (c.motion === "to_end") return [1 - s, 1, 2, 2];
@@ -410,9 +471,15 @@ class GungorsFloorCard extends HTMLElement {
     gl.uniform1fv(U("uGain"), M.lights.map((l) => this._gain(l)));
     const cov = [], vis = [], tt = [];
     M.covers.forEach((c) => { const t = this._val["open:" + c.id] ?? 0; cov.push(...this._covered(c, t)); vis.push(...this._visible(c, t)); tt.push(c.T); });
-    if (M.covers.length) { gl.uniform4fv(U("uCov"), cov); gl.uniform4fv(U("uVis"), vis); gl.uniform1fv(U("uT"), tt); }
+    if (M.covers.length) {
+      gl.uniform4fv(U("uCov"), cov); gl.uniform4fv(U("uVis"), vis); gl.uniform1fv(U("uT"), tt);
+      gl.uniform2fv(U("uOff"), [].concat(...M.covers.map((c) => c.offset || [0, 0])));     // outline shift per cover
+    }
+    const dg = M.default_gain || { day: 1, night: 1 };                  // default (world light) layer: day / night
+    gl.uniform1f(U("uDef"), this._sun && this._sun.night ? dg.night : dg.day);
     const bx = [].concat(...M.boxes); if (bx.length) gl.uniform4fv(U("uBox"), bx);
     gl.uniform1i(U("uHover"), this._hover);
+    this._wrap.querySelectorAll(".areas polygon").forEach((p) => p.classList.toggle("hover", +p.dataset.h === this._hover));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
@@ -423,16 +490,34 @@ class GungorsFloorCard extends HTMLElement {
     if (!this._cpu || x < 0 || y < 0 || x >= M.W || y >= M.H) return -1;
     const i = y * M.W + x;
     const inr = (e8, iv) => { if (e8 < 8) return false; const u = (e8 / 255 - 0.05) / 0.9; return (u >= iv[0] && u <= iv[1]) || (u >= iv[2] && u <= iv[3]); };
-    for (let n = 0; n < M.covers.length; n++) {
-      const c = M.covers[n], a = this._cpu[c.default], p = this._cpu[c.param];
-      if (this._conf(c.entity) && a && p && a[i] > 100 && inr(p[i], this._visible(c, this._val["open:" + c.id] ?? 0))) return n;
-    }
+    // lamps first (they are in front where their touch area meets a cover): inside their touch area
+    // (nearest centre wins where areas overlap), else within 6 px of the lamp
+    let best = -1, bestD = Infinity;
     for (let f = 0; f < M.fixtures.length; f++) {
-      const fa = this._cpu[M.fixtures[f].layer]; if (!fa || !this._conf(this._item(M.covers.length + f).it?.entity)) continue;
+      const fx = M.fixtures[f], fa = this._cpu[fx.layer];
+      if (!this._conf(this._item(M.covers.length + f).it?.entity)) continue;
+      if (fx.area) {
+        if (!inPoly(x, y, fx.area)) continue;
+        const cx = fx.area.reduce((s, p) => s + p[0], 0) / fx.area.length, cy = fx.area.reduce((s, p) => s + p[1], 0) / fx.area.length;
+        const dd = (x - cx) ** 2 + (y - cy) ** 2;
+        if (dd < bestD) { bestD = dd; best = M.covers.length + f; }
+        continue;
+      }
+      if (!fa) continue;
       for (let dy = -6; dy <= 6; dy++) for (let dx = -6; dx <= 6; dx++) {
         const xx = x + dx, yy = y + dy;
         if (xx >= 0 && yy >= 0 && xx < M.W && yy < M.H && fa[yy * M.W + xx] > 100) return M.covers.length + f;
       }
+    }
+    if (best >= 0) return best;
+    for (let n = 0; n < M.covers.length; n++) {
+      // by its closed silhouette (the blue outline, shifted by its offset), open or not and also behind a wall
+      const c = M.covers[n], [ox, oy] = c.offset || [0, 0];
+      const sx = x - ox, sy = y - oy, j = sy * M.W + sx;
+      if (!this._conf(c.entity) || sx < 0 || sy < 0 || sx >= M.W || sy >= M.H) continue;
+      if (c.outline != null) { const o = this._cpu[c.outline]; if (o && o[j] > 100) return n; continue; }
+      const p = this._cpu[c.param];
+      if (p && p[j] >= 8) return n;
     }
     return -1;
   }
