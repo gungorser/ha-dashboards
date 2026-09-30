@@ -27,7 +27,10 @@
  *         action: toggle
  *       hold_action:
  *         action: more-info
- *     garaj_door: none                # background: the page shows it as it is, no hover, no tap
+ *     mutfak_blind: none              # background: no hover, no tap, the page's default (covers open)
+ *     garaj_door:                     # background with a fixed value instead of the page's default:
+ *       entity: none                  #   cover: position 0-100 (0 closed, 100 open)
+ *       value: 0                      #   light: [r, g, b, intensity 0-1], e.g. [255, 255, 255, 0] = off
  *
  * Page entities left out of `entities` keep the page's defaults and are listed on the page (top right):
  * put them here or set them to none. Errors (unknown page entity, wrong domain, missing Home Assistant
@@ -35,7 +38,7 @@
  * which draws its borders grey. Page entities of other types (climate, ...) map to that domain; they
  * take no input, the page only shows their border and reports taps.
  */
-const CARD_VERSION = "1.11.0";
+const CARD_VERSION = "1.12.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
@@ -105,11 +108,16 @@ class GungorsFloorCard extends HTMLElement {
     if (typeof config.sun !== "string" || !config.sun.startsWith("sun.")) err("'sun' is required: a sun entity (sun.sun)");
     const ents = config.entities == null ? {} : config.entities;
     if (typeof ents !== "object" || Array.isArray(ents)) err("'entities' must be a map: page entity -> settings (or none)");
-    const map = new Map();
+    const map = new Map(), fixed = new Map();
     for (const [id, e] of Object.entries(ents)) {
       if (e === "none") { map.set(id, null); continue; }
+      if (e && typeof e === "object" && e.entity === "none") {
+        if (e.value != null) fixed.set(id, e.value);
+        map.set(id, null);
+        continue;
+      }
       if (!e || typeof e !== "object" || typeof e.entity !== "string" || !e.entity.includes("."))
-        err(`${id}: give 'entity' (a Home Assistant entity id) or none`);
+        err(`${id}: give 'entity' (a Home Assistant entity id, or none with an optional value)`);
       if (e.color != null && !isColor(e.color)) err(`${id}: color must be "#rrggbb"`);
       map.set(id, e);
     }
@@ -119,6 +127,7 @@ class GungorsFloorCard extends HTMLElement {
     this._config = { base: "/local/gungors_floor/", dock_radius: 370, ...config };
     if (!this._config.base.endsWith("/")) this._config.base += "/";
     this._map = map;                          // page id -> settings, null for none
+    this._fixed = fixed;                      // page id (none) -> its fixed value
     this._page = null;                        // what the page reported: {W, H, entities}
     this._sent = {};                          // last value sent per input (only changes are sent)
     if (this._frame) this._load();
@@ -188,7 +197,17 @@ class GungorsFloorCard extends HTMLElement {
     for (const [id, e] of this._map) {
       const type = page.entities.get(id);
       if (!type) { out.push(`${id}: not an entity of the ${this._config.floor} page`); continue; }
-      if (!e) continue;
+      if (!e) {
+        if (!this._fixed.has(id)) continue;
+        const v = this._fixed.get(id);
+        if (type === "cover" && !(Number.isInteger(v) && v >= 0 && v <= 100))
+          out.push(`${id}: value of a cover is a position 0-100 (0 closed, 100 open), not ${JSON.stringify(v)}`);
+        else if (type === "light" && !(Array.isArray(v) && v.length === 4 && v.every(Number.isFinite)
+                                       && v.slice(0, 3).every((x) => x >= 0 && x <= 255) && v[3] >= 0 && v[3] <= 1))
+          out.push(`${id}: value of a light is [r, g, b, intensity 0-1], not ${JSON.stringify(v)}`);
+        else if (!TYPES[type]) out.push(`${id}: a ${type} entity takes no value`);
+        continue;
+      }
       const domain = e.entity.split(".")[0];
       if (domainOf(type) !== domain) out.push(`${id}: a ${type} entity, ${e.entity} is a ${domain}`);
       else if (!hass.states[e.entity]) out.push(`${id}: ${e.entity} is not in Home Assistant (set it to none)`);
@@ -221,7 +240,11 @@ class GungorsFloorCard extends HTMLElement {
     if (rise && set) send("sun", { gf: "set", id: "sun", value: rise + " " + set });
     for (const [t, c] of Object.entries(this._config.colors || {})) send("color:" + t, { gf: "color", type: t, value: c });
     for (const [id, e] of this._map) {
-      if (!e) { send(id, { gf: "static", id }); continue; }
+      if (!e) {                                       // none: its fixed value (if any), then background
+        if (this._fixed.has(id)) send("value:" + id, { gf: "set", id, value: this._fixed.get(id) });
+        send(id, { gf: "static", id });
+        continue;
+      }
       if (e.color) send("color:" + id, { gf: "color", id, value: e.color });
       const state = this._hass.states[e.entity].state;
       send("available:" + id, { gf: "available", id, value: state !== "unavailable" && state !== "unknown" });
