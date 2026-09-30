@@ -5,13 +5,13 @@
  *
  * The floor page draws; this card only connects it to Home Assistant. The page runs in an iframe and
  * has typed entities (light: RGBA, cover: 0-100) plus a time and a sun input. The card feeds them from
- * Home Assistant states and turns the page's taps/holds into the actions set here in YAML. Nothing
- * happens by default: an entity without tap_action / hold_action does nothing on tap / hold.
+ * Home Assistant (time: the clock in Home Assistant's time zone, sun: sun.sun) and turns the page's
+ * taps/holds into the actions set here in YAML. Nothing happens by default: an entity without
+ * tap_action / hold_action does nothing on tap / hold.
  *
  *   type: custom:gungors-floor-card
  *   floor: kat0                       # floor of the page (its render folder under base)
  *   base: /local/gungors_floor/       # optional
- *   time: sensor.time                 # required
  *   sun: sun.sun                      # required
  *   dock_radius: 370                  # optional: size (page px) of the control dock in the bottom-left corner
  *   entities:                         # page entity -> Home Assistant entity (same domain as its type)
@@ -29,7 +29,7 @@
  * put them here or set them to none. Errors (unknown page entity, wrong domain, missing Home Assistant
  * entity) stop the card.
  */
-const CARD_VERSION = "1.10.2";
+const CARD_VERSION = "1.10.3";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain
 
 const DOCK_MODES = [
@@ -81,14 +81,19 @@ const CSS = `
 
 const HOLD_MS = 500;
 const pad = (n) => String(n).padStart(2, "0");
-const hhmm = (iso) => { if (!iso) return null; const d = new Date(iso); return isNaN(d) ? null : pad(d.getHours()) + ":" + pad(d.getMinutes()); };
+// "HH:MM" of a moment in Home Assistant's time zone (hass.config.time_zone), not the browser's
+const hhmm = (d, tz) => {
+  d = d instanceof Date ? d : new Date(d);
+  if (isNaN(d)) return null;
+  try { return new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d); }
+  catch (e) { return pad(d.getHours()) + ":" + pad(d.getMinutes()); }
+};
 
 class GungorsFloorCard extends HTMLElement {
   // ------------------------------------------------------------------ config (checked before the page loads)
   setConfig(config) {
     const err = (m) => { throw new Error("gungors-floor-card: " + m); };
     if (!config.floor) err("'floor' is required (e.g. kat0)");
-    if (typeof config.time !== "string" || !config.time.startsWith("sensor.")) err("'time' is required: a sensor entity (sensor.time)");
     if (typeof config.sun !== "string" || !config.sun.startsWith("sun.")) err("'sun' is required: a sun entity (sun.sun)");
     const ents = config.entities == null ? {} : config.entities;
     if (typeof ents !== "object" || Array.isArray(ents)) err("'entities' must be a map: page entity -> settings (or none)");
@@ -118,8 +123,10 @@ class GungorsFloorCard extends HTMLElement {
   }
 
   connectedCallback() {
-    if (this._root && !this._clockTimer) this._clockTimer = setInterval(() => this._clock(), 15000);
+    if (this._root && !this._clockTimer) this._clockTimer = setInterval(() => this._feed(), 15000);
   }
+
+  _tz() { return (this._hass && this._hass.config && this._hass.config.time_zone) || undefined; }
 
   disconnectedCallback() { clearInterval(this._clockTimer); this._clockTimer = null; }
 
@@ -165,7 +172,7 @@ class GungorsFloorCard extends HTMLElement {
   // configuration against the page and Home Assistant; null if all is well
   _errors() {
     const out = [], hass = this._hass, page = this._page;
-    for (const k of ["time", "sun"]) if (!hass.states[this._config[k]]) out.push(`${k}: ${this._config[k]} is not in Home Assistant`);
+    if (!hass.states[this._config.sun]) out.push(`sun: ${this._config.sun} is not in Home Assistant`);
     for (const [id, e] of this._map) {
       const type = page.entities.get(id);
       if (!type) { out.push(`${id}: not an entity of the ${this._config.floor} page`); continue; }
@@ -195,9 +202,10 @@ class GungorsFloorCard extends HTMLElement {
       this._sent[id] = key;
       this._post(msg);
     };
-    const t = this._hass.states[this._config.time].state;
-    if (/^\d{1,2}:\d{2}$/.test(t)) send("time", { gf: "set", id: "time", value: t });
-    const sa = this._hass.states[this._config.sun].attributes, rise = hhmm(sa.next_rising), set = hhmm(sa.next_setting);
+    const tz = this._tz();
+    send("time", { gf: "set", id: "time", value: hhmm(new Date(), tz) });      // Home Assistant's local time
+    const sa = this._hass.states[this._config.sun].attributes;
+    const rise = sa.next_rising && hhmm(sa.next_rising, tz), set = sa.next_setting && hhmm(sa.next_setting, tz);
     if (rise && set) send("sun", { gf: "set", id: "sun", value: rise + " " + set });
     for (const [id, e] of this._map) {
       if (!e) { send(id, { gf: "static", id }); continue; }
@@ -286,7 +294,7 @@ class GungorsFloorCard extends HTMLElement {
         <div class="title"></div><div class="list"></div></div>`;
     d.querySelectorAll(".btn").forEach((b) => b.addEventListener("click", () => { this._mode = b.dataset.mode; this._renderList(true); }));
     clearInterval(this._clockTimer);
-    this._clockTimer = setInterval(() => this._clock(), 15000);
+    this._clockTimer = setInterval(() => this._feed(), 15000);          // the clock moves on without state changes
     this._clock();
     this._renderList(true);
     this._fitDock();
@@ -300,9 +308,12 @@ class GungorsFloorCard extends HTMLElement {
   _clock() {
     const d = this._dock, c = d.querySelector(".clock");
     if (!c || !this._hass) return;
-    const t = this._hass.states[this._config.time];
-    c.textContent = t ? t.state : "--:--";
-    d.querySelector(".date").textContent = new Date().toLocaleDateString("tr-TR", { day: "numeric", month: "short", weekday: "short" });
+    const tz = this._tz(), now = new Date();
+    c.textContent = hhmm(now, tz);
+    let date;
+    try { date = now.toLocaleDateString("tr-TR", { timeZone: tz, day: "numeric", month: "short", weekday: "short" }); }
+    catch (e) { date = now.toLocaleDateString("tr-TR", { day: "numeric", month: "short", weekday: "short" }); }
+    d.querySelector(".date").textContent = date;
   }
 
   // rows of the active mode; rebuilt when the mode or a listed state changes (not while a slider is dragged)
@@ -323,7 +334,7 @@ class GungorsFloorCard extends HTMLElement {
       }
     } else if (mode === "sun") {
       const s = hass.states[this._config.sun], a = s ? s.attributes : {};
-      const t = (v) => hhmm(v) || "-";
+      const t = (v) => (v && hhmm(v, this._tz())) || "-";
       rows = [{ icon: s && s.state === "above_horizon" ? "mdi:weather-sunny" : "mdi:weather-night", on: s && s.state === "above_horizon",
                 label: "sun", value: s ? (s.state === "above_horizon" ? "up" : "down") : "-" },
               { icon: "mdi:angle-acute", label: "elevation", value: a.elevation != null ? Math.round(a.elevation) + "°" : "-" },
