@@ -14,11 +14,15 @@
  *   base: /local/gungors_floor/       # optional
  *   sun: sun.sun                      # required
  *   dock_radius: 370                  # optional: size (page px) of the control dock in the bottom-left corner
+ *   colors:                           # optional: border colours per page entity type ("other": every type
+ *     other: "#2ecc5a"                #   without its own); the page's defaults: cover blue, light yellow,
+ *                                     #   climate red, other green
  *   entities:                         # page entity -> Home Assistant entity (same domain as its type)
  *     salon_light:
  *       entity: light.salon_light
  *       name: Salon                   # optional: label in the dock
  *       slider: true                  # optional: a slider in the dock list
+ *       color: "#ff9800"              # optional: border colour of this entity on the page
  *       tap_action:
  *         action: toggle
  *       hold_action:
@@ -27,10 +31,14 @@
  *
  * Page entities left out of `entities` keep the page's defaults and are listed on the page (top right):
  * put them here or set them to none. Errors (unknown page entity, wrong domain, missing Home Assistant
- * entity) stop the card.
+ * entity) stop the card. A Home Assistant entity that is unavailable or unknown is reported to the page,
+ * which draws its borders grey. Page entities of other types (climate, ...) map to that domain; they
+ * take no input, the page only shows their border and reports taps.
  */
-const CARD_VERSION = "1.10.3";
-const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain
+const CARD_VERSION = "1.11.0";
+const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
+const domainOf = (type) => TYPES[type] || type;
+const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
 
 const DOCK_MODES = [
   { id: "lights", icon: "mdi:lightbulb-group", title: "lights" },
@@ -102,8 +110,12 @@ class GungorsFloorCard extends HTMLElement {
       if (e === "none") { map.set(id, null); continue; }
       if (!e || typeof e !== "object" || typeof e.entity !== "string" || !e.entity.includes("."))
         err(`${id}: give 'entity' (a Home Assistant entity id) or none`);
+      if (e.color != null && !isColor(e.color)) err(`${id}: color must be "#rrggbb"`);
       map.set(id, e);
     }
+    const colors = config.colors == null ? {} : config.colors;
+    if (typeof colors !== "object" || Array.isArray(colors)) err("'colors' must be a map: page entity type (or other) -> \"#rrggbb\"");
+    for (const [t, c] of Object.entries(colors)) if (!isColor(c)) err(`colors.${t} must be "#rrggbb"`);
     this._config = { base: "/local/gungors_floor/", dock_radius: 370, ...config };
     if (!this._config.base.endsWith("/")) this._config.base += "/";
     this._map = map;                          // page id -> settings, null for none
@@ -178,7 +190,7 @@ class GungorsFloorCard extends HTMLElement {
       if (!type) { out.push(`${id}: not an entity of the ${this._config.floor} page`); continue; }
       if (!e) continue;
       const domain = e.entity.split(".")[0];
-      if (TYPES[type] !== domain) out.push(`${id}: a ${type} entity, ${e.entity} is a ${domain}`);
+      if (domainOf(type) !== domain) out.push(`${id}: a ${type} entity, ${e.entity} is a ${domain}`);
       else if (!hass.states[e.entity]) out.push(`${id}: ${e.entity} is not in Home Assistant (set it to none)`);
     }
     return out.length ? out : null;
@@ -207,9 +219,13 @@ class GungorsFloorCard extends HTMLElement {
     const sa = this._hass.states[this._config.sun].attributes;
     const rise = sa.next_rising && hhmm(sa.next_rising, tz), set = sa.next_setting && hhmm(sa.next_setting, tz);
     if (rise && set) send("sun", { gf: "set", id: "sun", value: rise + " " + set });
+    for (const [t, c] of Object.entries(this._config.colors || {})) send("color:" + t, { gf: "color", type: t, value: c });
     for (const [id, e] of this._map) {
       if (!e) { send(id, { gf: "static", id }); continue; }
-      if (this._drag === id) continue;                // the slider being dragged drives the picture
+      if (e.color) send("color:" + id, { gf: "color", id, value: e.color });
+      const state = this._hass.states[e.entity].state;
+      send("available:" + id, { gf: "available", id, value: state !== "unavailable" && state !== "unknown" });
+      if (this._drag === id || !TYPES[this._page.entities.get(id)]) continue;   // dragged slider drives the picture; other types take no input
       const v = this._value(id, e);
       if (v != null) send(id, { gf: "set", id, value: v });
     }
