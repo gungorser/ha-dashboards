@@ -1,7 +1,7 @@
 /*
  * gungors-floor-card — Home Assistant Lovelace card showing one floor of the Blender house model
- * (repository ha-floorplan, build_floor_html.py -> output/<floor>/, deployed to
- * /config/www/gungors_floor/<floor>/ by deploy.ps1).
+ * (repository ha-floorplan: the page src/web/index.html and the render of each floor output/<floor>/,
+ * deployed to /config/www/gungors_floor/ by deploy.ps1; the card opens index.html?floor=<floor>).
  *
  * The floor page draws; this card only connects it to Home Assistant. The page runs in an iframe and
  * has typed entities (light: RGBA, cover: 0-100) plus a time and a sun input. The card feeds them from
@@ -9,7 +9,7 @@
  * happens by default: an entity without tap_action / hold_action does nothing on tap / hold.
  *
  *   type: custom:gungors-floor-card
- *   floor: kat0                       # folder under base
+ *   floor: kat0                       # floor of the page (its render folder under base)
  *   base: /local/gungors_floor/       # optional
  *   time: sensor.time                 # required
  *   sun: sun.sun                      # required
@@ -29,7 +29,7 @@
  * put them here or set them to none. Errors (unknown page entity, wrong domain, missing Home Assistant
  * entity) stop the card.
  */
-const CARD_VERSION = "1.10.1";
+const CARD_VERSION = "1.10.2";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain
 
 const DOCK_MODES = [
@@ -141,7 +141,7 @@ class GungorsFloorCard extends HTMLElement {
   _load() {
     this._page = null;
     this._sent = {};
-    this._frame.src = this._config.base + this._config.floor + "/index.html?t=" + Date.now();
+    this._frame.src = this._config.base + "index.html?floor=" + encodeURIComponent(this._config.floor) + "&t=" + Date.now();
   }
 
   _post(msg) { if (this._frame && this._frame.contentWindow) this._frame.contentWindow.postMessage(msg, "*"); }
