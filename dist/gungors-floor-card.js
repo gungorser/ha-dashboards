@@ -1,5 +1,5 @@
 /*
- * gungors-floor-card — Home Assistant Lovelace card showing one floor of the Blender house model
+ * gungors-floor-card — Home Assistant Lovelace card showing the floors of the Blender house model
  * (repository ha-floorplan: the page src/web/index.html and the render of each floor output/<floor>/,
  * deployed to /config/www/gungors_floor/ by deploy.ps1; the card opens index.html?floor=<floor>).
  *
@@ -9,28 +9,41 @@
  * taps/holds into the actions set here in YAML. Nothing happens by default: an entity without
  * tap_action / hold_action does nothing on tap / hold.
  *
+ * Floors: one card shows every floor in `floors`, the first one first; the floor button of the dock
+ * goes on to the next floor on each press (after the last, back to the first). Each floor has its own
+ * page entities. A single floor can still be given as `floor` + `entities`. The page holds every floor
+ * of the list (index.html?floors=kat0,kat1): it loads them all once, a floor switch is a message to it
+ * ({gf: "floor", floor}), not a new page.
+ *
+ * Loading: the page stays behind "loading..." until its images are in and the card's first inputs
+ * have arrived (the card sends {gf: "fed"} after its first full feed); the dock appears when the page
+ * reports {gf: "shown"}. No tap highlight anywhere in the card (mobile would flash it on every tap).
+ *
  *   type: custom:gungors-floor-card
- *   floor: kat0                       # floor of the page (its render folder under base)
  *   base: /local/gungors_floor/       # optional
  *   sun: sun.sun                      # required
  *   dock_radius: 370                  # optional: size (page px) of the control dock in the bottom-left corner
  *   colors:                           # optional: border colours per page entity type ("other": every type
  *     other: "#2ecc5a"                #   without its own); the page's defaults: cover blue, light yellow,
  *                                     #   climate red, other green
- *   entities:                         # page entity -> Home Assistant entity (same domain as its type)
- *     salon_light:
- *       entity: light.salon_light
- *       name: Salon                   # optional: label in the dock
- *       slider: true                  # optional: a slider in the dock list
- *       color: "#ff9800"              # optional: border colour of this entity on the page
- *       tap_action:
- *         action: toggle
- *       hold_action:
- *         action: more-info
- *     mutfak_blind: none              # background: no hover, no tap, the page's default (covers open)
- *     garaj_door:                     # background with a fixed value instead of the page's default:
- *       entity: none                  #   cover: position 0-100 (0 closed, 100 open)
- *       value: 0                      #   light: [r, g, b, intensity 0-1], e.g. [255, 255, 255, 0] = off
+ *   floors:
+ *     - floor: kat0                   # floor of the page (its render folder under base)
+ *       entities:                     # page entity -> Home Assistant entity (same domain as its type)
+ *         salon_light:
+ *           entity: light.salon_light
+ *           name: Salon               # optional: label in the dock
+ *           slider: true              # optional: a slider in the dock list
+ *           color: "#ff9800"          # optional: border colour of this entity on the page
+ *           tap_action:
+ *             action: toggle
+ *           hold_action:
+ *             action: more-info
+ *         mutfak_blind: none          # background: no hover, no tap, the page's default (covers open)
+ *         garaj_door:                 # background with a fixed value instead of the page's default:
+ *           entity: none              #   cover: position 0-100 (0 closed, 100 open)
+ *           value: 0                  #   light: [r, g, b, intensity 0-1], e.g. [255, 255, 255, 0] = off
+ *     - floor: kat1
+ *       entities: ...
  *
  * Page entities left out of `entities` keep the page's defaults and are listed on the page (top right):
  * put them here or set them to none. Errors (unknown page entity, wrong domain, missing Home Assistant
@@ -38,25 +51,30 @@
  * which draws its borders grey. Page entities of other types (climate, ...) map to that domain; they
  * take no input, the page only shows their border and reports taps.
  */
-const CARD_VERSION = "1.12.0";
+const CARD_VERSION = "1.12.5";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
 
+// dock buttons: display modes of the screen, and the floor button (goes to the next floor)
 const DOCK_MODES = [
   { id: "lights", icon: "mdi:lightbulb-group", title: "lights" },
   { id: "covers", icon: "mdi:curtains", title: "covers" },
   { id: "sun", icon: "mdi:weather-sunny", title: "sun" },
-  { id: "floors", icon: "mdi:home-floor-0", title: "floors" },
+  { id: "floor", title: "next floor" },
 ];
+// icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
+const floorIcon = (id) => { const m = /(\d+)/.exec(id); return m && +m[1] <= 3 ? "mdi:home-floor-" + m[1] : "mdi:layers"; };
 
 const CSS = `
-  ha-card{overflow:hidden;background:#3a3a3a}
-  .wrap{position:relative;width:100%;aspect-ratio:16 / 9}
+  ha-card{overflow:hidden;background:#3a3a3a;-webkit-tap-highlight-color:transparent;
+          display:flex;align-items:center;justify-content:center}
+  .wrap{position:relative;flex:none;width:100%;aspect-ratio:16 / 9}
   iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:block}
   .err{padding:12px 16px;color:#ff8a80;font:14px sans-serif;white-space:pre-wrap}
   .dock{position:absolute;left:0;transform-origin:0 0;font:15px "Segoe UI",Roboto,Arial,sans-serif;color:#e8f4ff;
-        user-select:none;-webkit-user-select:none;pointer-events:none}
+        user-select:none;-webkit-user-select:none;pointer-events:none;visibility:hidden}
+  .dock.shown{visibility:visible}
   .disc,.gloss{position:absolute;left:0;bottom:0;box-sizing:border-box}
   .disc{width:100%;height:100%;border-top-right-radius:100%;pointer-events:auto;
         background:radial-gradient(circle at 0% 100%,#071d45 0 52%,#0d3b85 64%,#1d6fd6 80%,#3b95f0 89%,#0b3a86 100%);
@@ -71,6 +89,7 @@ const CSS = `
   .btn ha-icon{--mdc-icon-size:34px;filter:drop-shadow(0 1px 1px rgba(0,0,0,.6))}
   .btn:hover{transform:scale(1.08)}
   .btn.active{border-color:#ffd66b;box-shadow:0 4px 10px rgba(0,0,0,.55),0 0 20px rgba(255,214,107,.85)}
+  .btn.single{opacity:.5;cursor:default}
   .screen{position:absolute;left:14px;bottom:14px;width:206px;height:182px;box-sizing:border-box;padding:8px 10px;pointer-events:auto;
           border-radius:16px;border:2px solid #5fb4ff;background:linear-gradient(#051a40,#0a2c63);
           box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 10px rgba(80,170,255,.4);display:flex;flex-direction:column}
@@ -87,7 +106,6 @@ const CSS = `
   .row .lbl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .row .val{font:14px "Consolas","Courier New",monospace;color:#7dff9a}
   .row input{width:74px;margin:0;accent-color:#ffd66b}
-  .row.dim{opacity:.45}
 `;
 
 const HOLD_MS = 500;
@@ -104,33 +122,57 @@ class GungorsFloorCard extends HTMLElement {
   // ------------------------------------------------------------------ config (checked before the page loads)
   setConfig(config) {
     const err = (m) => { throw new Error("gungors-floor-card: " + m); };
-    if (!config.floor) err("'floor' is required (e.g. kat0)");
     if (typeof config.sun !== "string" || !config.sun.startsWith("sun.")) err("'sun' is required: a sun entity (sun.sun)");
-    const ents = config.entities == null ? {} : config.entities;
-    if (typeof ents !== "object" || Array.isArray(ents)) err("'entities' must be a map: page entity -> settings (or none)");
-    const map = new Map(), fixed = new Map();
-    for (const [id, e] of Object.entries(ents)) {
-      if (e === "none") { map.set(id, null); continue; }
-      if (e && typeof e === "object" && e.entity === "none") {
-        if (e.value != null) fixed.set(id, e.value);
-        map.set(id, null);
-        continue;
+    const list = config.floors != null ? config.floors : [{ floor: config.floor, entities: config.entities }];
+    if (!Array.isArray(list) || !list.length) err("'floors' must be a list of {floor, entities}");
+    const floors = list.map((f, n) => {
+      if (!f || typeof f !== "object" || !f.floor) err(`floors[${n}]: 'floor' is required (e.g. kat0)`);
+      const ents = f.entities == null ? {} : f.entities;
+      if (typeof ents !== "object" || Array.isArray(ents)) err(`${f.floor}: 'entities' must be a map: page entity -> settings (or none)`);
+      const map = new Map(), fixed = new Map();
+      for (const [id, e] of Object.entries(ents)) {
+        if (e === "none") { map.set(id, null); continue; }
+        if (e && typeof e === "object" && e.entity === "none") {
+          if (e.value != null) fixed.set(id, e.value);
+          map.set(id, null);
+          continue;
+        }
+        if (!e || typeof e !== "object" || typeof e.entity !== "string" || !e.entity.includes("."))
+          err(`${f.floor}.${id}: give 'entity' (a Home Assistant entity id, or none with an optional value)`);
+        if (e.color != null && !isColor(e.color)) err(`${f.floor}.${id}: color must be "#rrggbb"`);
+        map.set(id, e);
       }
-      if (!e || typeof e !== "object" || typeof e.entity !== "string" || !e.entity.includes("."))
-        err(`${id}: give 'entity' (a Home Assistant entity id, or none with an optional value)`);
-      if (e.color != null && !isColor(e.color)) err(`${id}: color must be "#rrggbb"`);
-      map.set(id, e);
-    }
+      return { floor: String(f.floor), map, fixed };
+    });
     const colors = config.colors == null ? {} : config.colors;
     if (typeof colors !== "object" || Array.isArray(colors)) err("'colors' must be a map: page entity type (or other) -> \"#rrggbb\"");
     for (const [t, c] of Object.entries(colors)) if (!isColor(c)) err(`colors.${t} must be "#rrggbb"`);
     this._config = { base: "/local/gungors_floor/", dock_radius: 370, ...config };
     if (!this._config.base.endsWith("/")) this._config.base += "/";
-    this._map = map;                          // page id -> settings, null for none
-    this._fixed = fixed;                      // page id (none) -> its fixed value
-    this._page = null;                        // what the page reported: {W, H, entities}
-    this._sent = {};                          // last value sent per input (only changes are sent)
+    this._floors = floors;
+    this._fi = Math.min(this._fi || 0, floors.length - 1);
+    this._useFloor();
     if (this._frame) this._load();
+  }
+
+  // the floor shown now: its page id, page entity -> settings (null for none), fixed values of none entities
+  _useFloor() {
+    const f = this._floors[this._fi];
+    this._floor = f.floor;
+    this._map = f.map;
+    this._fixed = f.fixed;
+  }
+
+  _nextFloor() {
+    if (this._floors.length < 2 || !this._page) return;
+    this._fi = (this._fi + 1) % this._floors.length;
+    this._useFloor();
+    this._drag = null;
+    this._listSig = null;
+    this._page = null;                        // until the page's "ready" for the new floor
+    this._sent = {};
+    this._fed = false;
+    this._post({ gf: "floor", floor: this._floor });
   }
 
   getCardSize() { return 9; }
@@ -151,6 +193,21 @@ class GungorsFloorCard extends HTMLElement {
 
   disconnectedCallback() { clearInterval(this._clockTimer); this._clockTimer = null; }
 
+  // The card takes the screen below its top (a panel view: below the header); the picture keeps its
+  // aspect ratio, grows until it meets the first edge of that area and stays centred in it (landscape
+  // phone: full height, space left and right; portrait: full width, space above and below).
+  _fit() {
+    if (!this._card) return;
+    const top = this.getBoundingClientRect().top + window.scrollY;
+    const H = Math.max(200, Math.floor(window.innerHeight - Math.max(0, top)));
+    const W = this.clientWidth || this._card.clientWidth;
+    if (!W) return;
+    const w = Math.min(W, H * this._ratio);
+    this._card.style.height = H + "px";
+    this._wrap.style.width = w + "px";
+    this._fitDock();
+  }
+
   // ------------------------------------------------------------------ page
   _build() {
     this._root = this.attachShadow({ mode: "open" });
@@ -162,14 +219,23 @@ class GungorsFloorCard extends HTMLElement {
     this._errBox = this._root.querySelector(".err");
     this._onMessage = (e) => { if (e.source === this._frame.contentWindow) this._message(e.data); };
     window.addEventListener("message", this._onMessage);
+    this._card = this._root.querySelector("ha-card");
+    this._ratio = 16 / 9;
+    this._onResize = () => this._fit();
+    window.addEventListener("resize", this._onResize);
+    new ResizeObserver(() => this._fit()).observe(this);
     new ResizeObserver(() => this._fitDock()).observe(this._wrap);
+    requestAnimationFrame(() => this._fit());
     this._load();
   }
 
   _load() {
     this._page = null;
     this._sent = {};
-    this._frame.src = this._config.base + "index.html?floor=" + encodeURIComponent(this._config.floor) + "&t=" + Date.now();
+    this._fed = false;                        // first full feed not sent yet
+    this._dock.classList.remove("shown");     // the dock waits for the page's "shown"
+    const floors = this._floors.map((f) => encodeURIComponent(f.floor)).join(",");
+    this._frame.src = this._config.base + "index.html?floors=" + floors + "&floor=" + encodeURIComponent(this._floor) + "&t=" + Date.now();
   }
 
   _post(msg) { if (this._frame && this._frame.contentWindow) this._frame.contentWindow.postMessage(msg, "*"); }
@@ -177,11 +243,17 @@ class GungorsFloorCard extends HTMLElement {
   _message(d) {
     if (!d || typeof d.gf !== "string") return;
     if (d.gf === "ready") {
+      if (d.floor != null && d.floor !== this._floor) return;          // a page still loading from the floor before
       this._page = { W: d.W, H: d.H, entities: new Map(d.entities.map((e) => [e.id, e.type])) };
       this._sent = {};
+      this._fed = false;
       this._wrap.style.aspectRatio = d.W + " / " + d.H;
+      this._ratio = d.W / d.H;
+      this._fit();
       this._buildDock();
       this._feed();
+    } else if (d.gf === "shown") {
+      this._dock.classList.add("shown");
     } else if (d.gf === "tap" || d.gf === "hold") {
       this._run(d.id, d.gf);
     } else if (d.gf === "phase") {
@@ -196,7 +268,7 @@ class GungorsFloorCard extends HTMLElement {
     if (!hass.states[this._config.sun]) out.push(`sun: ${this._config.sun} is not in Home Assistant`);
     for (const [id, e] of this._map) {
       const type = page.entities.get(id);
-      if (!type) { out.push(`${id}: not an entity of the ${this._config.floor} page`); continue; }
+      if (!type) { out.push(`${id}: not an entity of the ${this._floor} page`); continue; }
       if (!e) {
         if (!this._fixed.has(id)) continue;
         const v = this._fixed.get(id);
@@ -218,7 +290,7 @@ class GungorsFloorCard extends HTMLElement {
   _showErrors(list) {
     this._errBox.hidden = !list;
     this._wrap.hidden = !!list;
-    if (list) this._errBox.textContent = "gungors-floor-card:\n" + list.join("\n");
+    if (list) this._errBox.textContent = "gungors-floor-card (" + this._floor + "):\n" + list.join("\n");
   }
 
   // Home Assistant state -> page inputs (only what changed is sent)
@@ -252,6 +324,7 @@ class GungorsFloorCard extends HTMLElement {
       const v = this._value(id, e);
       if (v != null) send(id, { gf: "set", id, value: v });
     }
+    if (!this._fed) { this._fed = true; this._post({ gf: "fed" }); }   // first inputs are in: the page may show itself
     this._clock();
   }
 
@@ -319,19 +392,25 @@ class GungorsFloorCard extends HTMLElement {
   // ------------------------------------------------------------------ dock (quarter-disc control panel, bottom left)
   _buildDock() {
     const R = this._config.dock_radius, d = this._dock, H = this._page.H;
-    this._mode = this._mode || "lights";
-    const rb = R - 46, angles = [16, 37, 58, 79];
+    if (!DOCK_MODES.some((m) => m.id === this._mode && m.icon)) this._mode = "lights";
+    const rb = R - 46, angles = [16, 37, 58, 79], single = this._floors.length < 2;
     const btns = DOCK_MODES.map((m, i) => {
-      const a = angles[i] * Math.PI / 180;
-      return `<button class="btn" data-mode="${m.id}" title="${m.title}"
-                style="left:${rb * Math.cos(a) - 35}px;top:${R - rb * Math.sin(a) - 35}px"><ha-icon icon="${m.icon}"></ha-icon></button>`;
+      const a = angles[i] * Math.PI / 180, isFloor = m.id === "floor";
+      const icon = isFloor ? floorIcon(this._floor) : m.icon;
+      const title = isFloor ? this._floor + (single ? "" : " (next floor)") : m.title;
+      return `<button class="btn${isFloor && single ? " single" : ""}" data-mode="${m.id}" title="${title}"
+                style="left:${rb * Math.cos(a) - 35}px;top:${R - rb * Math.sin(a) - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
     }).join("");
     d.style.width = d.style.height = R + "px";
     d.style.top = ((H - R) / H * 100) + "%";
     d.innerHTML = `<div class="disc"></div><div class="gloss"></div>${btns}
       <div class="screen"><div class="top"><span class="clock"></span><span class="date"></span></div>
         <div class="title"></div><div class="list"></div></div>`;
-    d.querySelectorAll(".btn").forEach((b) => b.addEventListener("click", () => { this._mode = b.dataset.mode; this._renderList(true); }));
+    d.querySelectorAll(".btn").forEach((b) => b.addEventListener("click", () => {
+      if (b.dataset.mode === "floor") { this._nextFloor(); return; }
+      this._mode = b.dataset.mode;
+      this._renderList(true);
+    }));
     clearInterval(this._clockTimer);
     this._clockTimer = setInterval(() => this._feed(), 15000);          // the clock moves on without state changes
     this._clock();
@@ -371,7 +450,7 @@ class GungorsFloorCard extends HTMLElement {
         const value = type === "light" ? (st.state !== "on" ? "off" : st.attributes.brightness != null ? pct + "%" : "on") : pct + "%";
         rows.push({ id, icon, on, label: e.name || id, value, pct, slider: !!e.slider });
       }
-    } else if (mode === "sun") {
+    } else {
       const s = hass.states[this._config.sun], a = s ? s.attributes : {};
       const t = (v) => (v && hhmm(v, this._tz())) || "-";
       rows = [{ icon: s && s.state === "above_horizon" ? "mdi:weather-sunny" : "mdi:weather-night", on: s && s.state === "above_horizon",
@@ -380,19 +459,13 @@ class GungorsFloorCard extends HTMLElement {
               { icon: "mdi:weather-sunset-down", label: "sunset", value: t(a.next_setting) },
               { icon: "mdi:weather-sunset-up", label: "sunrise", value: t(a.next_rising) },
               { icon: this._phase === "gece" ? "mdi:post-lamp" : "mdi:sun-clock", on: true, label: "picture", value: this._phase || "-" }];
-    } else {
-      const floors = hass.floors ? Object.values(hass.floors).sort((x, y) => (x.level ?? 0) - (y.level ?? 0)) : [];
-      rows = (floors.length ? floors : [{ floor_id: this._config.floor, name: this._config.floor }]).map((f) => {
-        const cur = f.floor_id === this._config.floor;
-        return { icon: f.icon || "mdi:home-floor-" + (f.level ?? 0), on: cur, label: f.name, value: cur ? "●" : "", dim: !cur };
-      });
     }
-    const sig = mode + JSON.stringify(rows.map((r) => [r.label, r.value, r.on]));
+    const sig = this._floor + mode + JSON.stringify(rows.map((r) => [r.label, r.value, r.on]));
     if (!force && sig === this._listSig) return;
     this._listSig = sig;
     d.querySelectorAll(".btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
-    d.querySelector(".title").textContent = DOCK_MODES.find((m) => m.id === mode).title;
-    list.innerHTML = rows.map((r, i) => `<div class="row${r.on ? " on" : ""}${r.dim ? " dim" : ""}${r.id ? " act" : ""}" data-i="${i}" title="${r.id || ""}">
+    d.querySelector(".title").textContent = this._floor + " · " + DOCK_MODES.find((m) => m.id === mode).title;
+    list.innerHTML = rows.map((r, i) => `<div class="row${r.on ? " on" : ""}${r.id ? " act" : ""}" data-i="${i}" title="${r.id || ""}">
         <ha-icon icon="${r.icon}"></ha-icon><span class="lbl">${r.label}</span>
         ${r.slider ? `<input type="range" min="0" max="100" value="${r.pct}">` : `<span class="val">${r.value}</span>`}</div>`).join("");
     list.querySelectorAll(".row.act").forEach((el) => {
@@ -425,4 +498,4 @@ class GungorsFloorCard extends HTMLElement {
 
 customElements.define("gungors-floor-card", GungorsFloorCard);
 window.customCards = window.customCards || [];
-window.customCards.push({ type: "gungors-floor-card", name: "Gungor floor view", description: "Live-lit 3D view of a floor (Blender renders, ha-floorplan page)" });
+window.customCards.push({ type: "gungors-floor-card", name: "Gungor floor view", description: "Live-lit 3D view of the floors (Blender renders, ha-floorplan page)" });
