@@ -49,6 +49,9 @@
  *           hold_action:
  *             action: more-info
  *         mutfak_blind: none          # background: no hover, no tap, the page's default (covers open)
+ *         salon_blind:                # background that follows Home Assistant (e.g. a manual blind):
+ *           entity: cover.salon_cover #   no hover, no border, no tap, like none, but the page shows the
+ *           selectable: false         #   entity's state (a cover's position, a light's colour)
  *         garaj_door:                 # background with a fixed value instead of the page's default:
  *           entity: none              #   cover: position 0-100 (0 closed, 100 open)
  *           value: 0                  #   light: [r, g, b, intensity 0-1], e.g. [255, 255, 255, 0] = off
@@ -61,7 +64,7 @@
  * which draws its borders grey. Page entities of other types (climate, ...) map to that domain; they
  * take no input, the page only shows their border and reports taps.
  */
-const CARD_VERSION = "1.13.0";
+const CARD_VERSION = "1.14.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
@@ -150,6 +153,7 @@ class GungorsFloorCard extends HTMLElement {
         if (!e || typeof e !== "object" || typeof e.entity !== "string" || !e.entity.includes("."))
           err(`${f.floor}.${id}: give 'entity' (a Home Assistant entity id, or none with an optional value)`);
         if (e.color != null && !isColor(e.color)) err(`${f.floor}.${id}: color must be "#rrggbb"`);
+        if (e.selectable != null && typeof e.selectable !== "boolean") err(`${f.floor}.${id}: selectable must be true or false`);
         map.set(id, e);
       }
       const rooms = f.rooms == null ? null : f.rooms;
@@ -348,9 +352,12 @@ class GungorsFloorCard extends HTMLElement {
         send(id, { gf: "static", id });
         continue;
       }
-      if (e.color) send("color:" + id, { gf: "color", id, value: e.color });
-      const state = this._hass.states[e.entity].state;
-      send("available:" + id, { gf: "available", id, value: state !== "unavailable" && state !== "unknown" });
+      if (e.selectable === false) send("static:" + id, { gf: "static", id });   // background, but fed from Home Assistant
+      else {
+        if (e.color) send("color:" + id, { gf: "color", id, value: e.color });
+        const state = this._hass.states[e.entity].state;
+        send("available:" + id, { gf: "available", id, value: state !== "unavailable" && state !== "unknown" });
+      }
       if (this._drag === id || !TYPES[this._page.entities.get(id)]) continue;   // dragged slider drives the picture; other types take no input
       const v = this._value(id, e);
       if (v != null) send(id, { gf: "set", id, value: v });
@@ -374,7 +381,7 @@ class GungorsFloorCard extends HTMLElement {
   // ------------------------------------------------------------------ tap / hold -> the actions in YAML
   _run(id, which) {
     const e = this._map.get(id);
-    if (!e) return;                                   // not mapped (the page toggles it itself) or none
+    if (!e || e.selectable === false) return;         // not mapped (the page toggles it itself), none or not selectable
     const act = e[which + "_action"];
     if (!act || act.action === "none") return;
     if (navigator.vibrate) navigator.vibrate(which === "hold" ? 50 : 10);
@@ -474,7 +481,7 @@ class GungorsFloorCard extends HTMLElement {
     if (mode === "lights" || mode === "covers") {
       const type = mode === "lights" ? "light" : "cover";
       for (const [id, e] of this._map) {
-        if (!e || this._page.entities.get(id) !== type || !hass.states[e.entity]) continue;
+        if (!e || e.selectable === false || this._page.entities.get(id) !== type || !hass.states[e.entity]) continue;
         const st = hass.states[e.entity], v = this._value(id, e);
         const pct = type === "light" ? Math.round(v[3] * 100) : v, on = pct > 0;
         const icon = type === "light" ? (on ? "mdi:lightbulb-on" : "mdi:lightbulb-outline") : (on ? "mdi:curtains" : "mdi:curtains-closed");
