@@ -33,9 +33,9 @@
  *     - floor: kat0                   # floor of the page (its render folder under base)
  *       rooms:                        # optional: per room (a zone of the floor's render) while the sun is
  *         salon:                      #   up: default + sun + covers x how far its covers are open (their
- *           sun: 1                    #   mean), times factor (default 1); a room left out: sun 1, covers 2;
+ *           sun: 1                    #   mean); a room left out: sun 1, covers 2;
  *           covers: 2                 #   "other": what is in no room (rooms without covers, the outside),
- *         koridor0: {sun: 1, covers: 2, factor: 0.7}   #   default + its sun (3 if left out)
+ *         koridor0: {sun: 0.7, covers: 1.4}   #   default + its sun (3 if left out)
  *         other: {sun: 3}
  *       entities:                     # page entity -> Home Assistant entity (same domain as its type)
  *         salon_light:
@@ -64,7 +64,7 @@
  * which draws its borders grey. Page entities of other types (climate, ...) map to that domain; they
  * take no input, the page only shows their border and reports taps.
  */
-const CARD_VERSION = "1.14.1";
+const CARD_VERSION = "1.14.2";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
@@ -158,11 +158,11 @@ class GungorsFloorCard extends HTMLElement {
       }
       const rooms = f.rooms == null ? null : f.rooms;
       if (rooms != null) {
-        if (typeof rooms !== "object" || Array.isArray(rooms)) err(`${f.floor}: 'rooms' must be a map: room -> {sun, covers, factor}`);
+        if (typeof rooms !== "object" || Array.isArray(rooms)) err(`${f.floor}: 'rooms' must be a map: room -> {sun, covers}`);
         for (const [r, v] of Object.entries(rooms)) {
-          if (!v || typeof v !== "object") err(`${f.floor}.rooms.${r}: give {sun, covers, factor} (numbers)`);
+          if (!v || typeof v !== "object") err(`${f.floor}.rooms.${r}: give {sun, covers} (numbers)`);
           for (const [k, x] of Object.entries(v))
-            if (!["sun", "covers", "factor"].includes(k) || typeof x !== "number") err(`${f.floor}.rooms.${r}.${k}: sun, covers and factor are numbers`);
+            if (!["sun", "covers"].includes(k) || typeof x !== "number") err(`${f.floor}.rooms.${r}.${k}: sun and covers are numbers`);
         }
       }
       for (const [id, e] of map) if (e && e.gain != null && typeof e.gain !== "number") err(`${f.floor}.${id}: gain must be a number`);
