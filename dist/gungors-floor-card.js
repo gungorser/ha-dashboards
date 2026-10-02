@@ -4,8 +4,8 @@
  * deployed to /config/www/gungors_floor/ by deploy.ps1; the card opens index.html?floor=<floor>).
  *
  * The floor page draws; this card only connects it to Home Assistant. The page runs in an iframe and
- * has typed entities (light: RGBA, cover: 0-100) plus a time and a sun input. The card feeds them from
- * Home Assistant (time: the clock in Home Assistant's time zone, sun: sun.sun) and turns the page's
+ * has typed entities (light: RGBA, cover: 0-100, climate: "mode action current target") plus a time
+ * and a sun input. The card feeds them from Home Assistant (time: the clock in Home Assistant's time zone, sun: sun.sun) and turns the page's
  * taps/holds into the actions set here in YAML. Nothing happens by default: an entity without
  * tap_action / hold_action does nothing on tap / hold.
  *
@@ -61,12 +61,15 @@
  * Page entities left out of `entities` keep the page's defaults and are listed on the page (top right):
  * put them here or set them to none. Errors (unknown page entity, wrong domain, missing Home Assistant
  * entity) stop the card. A Home Assistant entity that is unavailable or unknown is reported to the page,
- * which draws its borders grey. Page entities of other types (climate, ...) map to that domain; they
- * take no input, the page only shows their border and reports taps.
+ * which draws its borders grey. A climate gets its hvac mode, hvac_action, current_temperature and
+ * temperature (target), "-" where missing; the page paints the radiator by its state and writes the
+ * temperatures. Page entities of other types map to that domain; they take no input, the page only
+ * shows their border and reports taps.
  */
-const CARD_VERSION = "1.14.2";
+const CARD_VERSION = "1.15.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
+const INPUTS = { light: 1, cover: 1, climate: 1 };     // page entity types that take a value
 const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
 
 // dock buttons: display modes of the screen, and the floor button (goes to the next floor)
@@ -310,7 +313,9 @@ class GungorsFloorCard extends HTMLElement {
         else if (type === "light" && !(Array.isArray(v) && v.length === 4 && v.every(Number.isFinite)
                                        && v.slice(0, 3).every((x) => x >= 0 && x <= 255) && v[3] >= 0 && v[3] <= 1))
           out.push(`${id}: value of a light is [r, g, b, intensity 0-1], not ${JSON.stringify(v)}`);
-        else if (!TYPES[type]) out.push(`${id}: a ${type} entity takes no value`);
+        else if (type === "climate" && !(typeof v === "string" && v.trim().split(/\s+/).length === 4))
+          out.push(`${id}: value of a climate is "mode action current target" ("-" where unknown), not ${JSON.stringify(v)}`);
+        else if (!INPUTS[type]) out.push(`${id}: a ${type} entity takes no value`);
         continue;
       }
       const domain = e.entity.split(".")[0];
@@ -363,7 +368,7 @@ class GungorsFloorCard extends HTMLElement {
         const state = this._hass.states[e.entity].state;
         send("available:" + id, { gf: "available", id, value: state !== "unavailable" && state !== "unknown" });
       }
-      if (this._drag === id || !TYPES[this._page.entities.get(id)]) continue;   // dragged slider drives the picture; other types take no input
+      if (this._drag === id || !INPUTS[this._page.entities.get(id)]) continue;   // dragged slider drives the picture; other types take no input
       const v = this._value(id, e);
       if (v != null) send(id, { gf: "set", id, value: v });
     }
@@ -378,6 +383,10 @@ class GungorsFloorCard extends HTMLElement {
       if (st.state !== "on") return rgb.concat(0);
       const b = st.attributes.brightness;
       return rgb.concat(b != null ? Math.round(b / 2.55) / 100 : 1);
+    }
+    if (type === "climate") {
+      const a = st.attributes, n = (x) => (x == null || !Number.isFinite(Number(x)) ? "-" : Number(x));
+      return [st.state || "-", a.hvac_action || "-", n(a.current_temperature), n(a.temperature)].join(" ");
     }
     const pos = st.attributes.current_position;
     return pos != null ? pos : st.state === "closed" ? 0 : 100;
