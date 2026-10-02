@@ -23,16 +23,26 @@
  *   base: /local/gungors_floor/       # optional
  *   sun: sun.sun                      # required
  *   dock_radius: 370                  # optional: size (page px) of the control dock in the bottom-left corner
+ *   lighting:                         # optional: brightness of the house's world light (the page's
+ *     default: 1                      #   settings.json values where left out): default = everywhere, also
+ *                                     #   at night; a floor's rooms add to it while the sun is up
  *   colors:                           # optional: border colours per page entity type ("other": every type
  *     other: "#2ecc5a"                #   without its own); the page's defaults: cover blue, light yellow,
  *                                     #   climate red, other green
  *   floors:
  *     - floor: kat0                   # floor of the page (its render folder under base)
+ *       rooms:                        # optional: per room (a zone of the floor's render) while the sun is
+ *         salon:                      #   up: default + sun + covers x how far its covers are open (their
+ *           sun: 1                    #   mean), times factor (default 1); a room left out: sun 1, covers 2;
+ *           covers: 2                 #   "other": what is in no room (rooms without covers, the outside),
+ *         koridor0: {sun: 1, covers: 2, factor: 0.7}   #   default + its sun (3 if left out)
+ *         other: {sun: 3}
  *       entities:                     # page entity -> Home Assistant entity (same domain as its type)
  *         salon_light:
  *           entity: light.salon_light
  *           name: Salon               # optional: label in the dock
  *           slider: true              # optional: a slider in the dock list
+ *           gain: 2                   # optional (lights): brightness at full intensity, times the render's
  *           color: "#ff9800"          # optional: border colour of this entity on the page
  *           tap_action:
  *             action: toggle
@@ -51,7 +61,7 @@
  * which draws its borders grey. Page entities of other types (climate, ...) map to that domain; they
  * take no input, the page only shows their border and reports taps.
  */
-const CARD_VERSION = "1.12.5";
+const CARD_VERSION = "1.13.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
@@ -142,11 +152,24 @@ class GungorsFloorCard extends HTMLElement {
         if (e.color != null && !isColor(e.color)) err(`${f.floor}.${id}: color must be "#rrggbb"`);
         map.set(id, e);
       }
-      return { floor: String(f.floor), map, fixed };
+      const rooms = f.rooms == null ? null : f.rooms;
+      if (rooms != null) {
+        if (typeof rooms !== "object" || Array.isArray(rooms)) err(`${f.floor}: 'rooms' must be a map: room -> {sun, covers, factor}`);
+        for (const [r, v] of Object.entries(rooms)) {
+          if (!v || typeof v !== "object") err(`${f.floor}.rooms.${r}: give {sun, covers, factor} (numbers)`);
+          for (const [k, x] of Object.entries(v))
+            if (!["sun", "covers", "factor"].includes(k) || typeof x !== "number") err(`${f.floor}.rooms.${r}.${k}: sun, covers and factor are numbers`);
+        }
+      }
+      for (const [id, e] of map) if (e && e.gain != null && typeof e.gain !== "number") err(`${f.floor}.${id}: gain must be a number`);
+      return { floor: String(f.floor), map, fixed, rooms };
     });
     const colors = config.colors == null ? {} : config.colors;
     if (typeof colors !== "object" || Array.isArray(colors)) err("'colors' must be a map: page entity type (or other) -> \"#rrggbb\"");
     for (const [t, c] of Object.entries(colors)) if (!isColor(c)) err(`colors.${t} must be "#rrggbb"`);
+    const lighting = config.lighting == null ? {} : config.lighting;
+    if (typeof lighting !== "object" || (lighting.default != null && typeof lighting.default !== "number"))
+      err("'lighting' must be {default: a number}");
     this._config = { base: "/local/gungors_floor/", dock_radius: 370, ...config };
     if (!this._config.base.endsWith("/")) this._config.base += "/";
     this._floors = floors;
@@ -161,6 +184,7 @@ class GungorsFloorCard extends HTMLElement {
     this._floor = f.floor;
     this._map = f.map;
     this._fixed = f.fixed;
+    this._rooms = f.rooms;
   }
 
   _nextFloor() {
@@ -311,6 +335,13 @@ class GungorsFloorCard extends HTMLElement {
     const rise = sa.next_rising && hhmm(sa.next_rising, tz), set = sa.next_setting && hhmm(sa.next_setting, tz);
     if (rise && set) send("sun", { gf: "set", id: "sun", value: rise + " " + set });
     for (const [t, c] of Object.entries(this._config.colors || {})) send("color:" + t, { gf: "color", type: t, value: c });
+    // lighting from this YAML over the page's settings.json: default, the floor's rooms, light gains
+    const light = {}, def = (this._config.lighting || {}).default, gain = {};
+    if (def != null) light.default = def;
+    if (this._rooms) light.rooms = this._rooms;
+    for (const [id, e] of this._map) if (e && e.gain != null) gain[id] = e.gain;
+    if (Object.keys(gain).length) light.gain = gain;
+    if (Object.keys(light).length) send("settings", { gf: "settings", value: light });
     for (const [id, e] of this._map) {
       if (!e) {                                       // none: its fixed value (if any), then background
         if (this._fixed.has(id)) send("value:" + id, { gf: "set", id, value: this._fixed.get(id) });
