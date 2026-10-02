@@ -64,7 +64,7 @@
  * which draws its borders grey. Page entities of other types (climate, ...) map to that domain; they
  * take no input, the page only shows their border and reports taps.
  */
-const CARD_VERSION = "1.14.0";
+const CARD_VERSION = "1.14.1";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
@@ -271,7 +271,12 @@ class GungorsFloorCard extends HTMLElement {
   _message(d) {
     if (!d || typeof d.gf !== "string") return;
     if (d.gf === "ready") {
-      if (d.floor != null && d.floor !== this._floor) return;          // a page still loading from the floor before
+      if (d.floor != null && d.floor !== this._floor) {
+        // another floor: a page still loading from the floor before, or the page reopened on the floor of
+        // its URL (the browser reloads the iframe when the view comes back): ask it for this card's floor
+        this._post({ gf: "floor", floor: this._floor });
+        return;
+      }
       this._page = { W: d.W, H: d.H, entities: new Map(d.entities.map((e) => [e.id, e.type])) };
       this._sent = {};
       this._fed = false;
