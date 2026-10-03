@@ -9,20 +9,25 @@ Custom Lovelace cards for the Gungor house. Installed through HACS as a custom r
 | `custom:gungors-schedule-card` | `program` dashboard | Form editor for calendar events whose description is JSON (`room_name`, `temp`, `sleep_temp`, `darkness`) |
 | `custom:gungors-floor-card` | `floorplan-3d` dashboard | Live-lit 3D view of a floor (Blender renders + WebGL2), tap/hold like the floorplan dashboard |
 
+Each card's header comment is its full reference (YAML options, messages, behaviour): read the
+README, then only the header of the card you touch.
+
 ## gungors-floor-card
 
-```yaml
-type: custom:gungors-floor-card
-floor: zemin_kat                  # folder under base
-base: /local/gungors_floor/       # optional
-light_gain: 1                     # optional
-```
+Shows the 3D floor view of ha-floorplan in an iframe (`/local/gungors_floor/index.html?floors=...`)
+and connects it to Home Assistant: feeds lights, covers, climates, time and sun, and turns taps/holds
+into the actions set in YAML. Configuration and the card <-> page messages: the header of
+`dist/gungors-floor-card.js`. The page, the renders (`model.json` + layers) and their deploy belong
+to ha-floorplan; the dashboard that uses the card is ha-configs `dashboards/floorplan_3d.yaml`.
 
-The floor data (`model.json` + layer images) is not part of this repository. It is build output of
-the Blender project (`ha-floorplan`: `src/build_floor_html.py`) and is copied to
-`/config/www/gungors_floor/<floor>/` by its `src/ha/deploy.ps1`.
+## Related repositories
+
+- **ha-floorplan**: the floor page and renders the floor card shows (page protocol documented there).
+- **ha-configs**: the dashboards that use these cards (`floorplan_3d`, `program`, `unnecessary`).
 
 ## Releasing
 
 Bump the card's `VERSION` / `CARD_VERSION`, commit, then publish a GitHub release (`vX.Y.Z`).
-HACS offers the update; after updating, reload the browser.
+HACS offers the update; after updating, reload the browser. A card copied straight into
+`www/community/ha-dashboards/` (no release) keeps its old URL: bump `v=<card version>` on the
+dashboard resource `ha-dashboards.js` so browsers load the new file.
