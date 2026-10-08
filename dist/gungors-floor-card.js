@@ -19,10 +19,17 @@
  * have arrived (the card sends {gf: "fed"} after its first full feed); the dock appears when the page
  * reports {gf: "shown"}. No tap highlight anywhere in the card (mobile would flash it on every tap).
  *
+ * Wall cut: the cut button of the dock goes on to the next cut the floor has (none -> front -> all; the
+ * page's "ready" lists them) and sends it to the page ({gf: "cut", mode}); the page shows that cut's
+ * render of every floor (the plain one where a floor has none). The choice is kept in this browser
+ * (localStorage); YAML `cut` is the first one. The lighting is the same in every cut.
+ *
  *   type: custom:gungors-floor-card
  *   base: /local/gungors_floor/       # optional
  *   sun: sun.sun                      # required
  *   dock_radius: 370                  # optional: size (page px) of the control dock in the bottom-left corner
+ *   cut: front                        # optional: wall cut shown first: none, front (default: the outer walls
+ *                                     #   facing the camera cut down) or all (every wall cut down)
  *   lighting:                         # optional: brightness of the house's world light (the page's
  *     default: 1                      #   settings.json values where left out): default = everywhere, also
  *                                     #   at night; a floor's rooms add to it while the sun is up
@@ -66,7 +73,7 @@
  * temperatures. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.15.0";
+const CARD_VERSION = "1.16.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1 };     // page entity types that take a value
@@ -78,7 +85,14 @@ const DOCK_MODES = [
   { id: "covers", icon: "mdi:curtains", title: "covers" },
   { id: "sun", icon: "mdi:weather-sunny", title: "sun" },
   { id: "floor", title: "next floor" },
+  { id: "cut", title: "wall cut" },
 ];
+// wall cut (the page's renders): icon and title of each
+const CUTS = ["none", "front", "all"];
+const CUT_ICON = { none: "mdi:wall", front: "mdi:box-cutter", all: "mdi:floor-plan" };
+const CUT_TITLE = { none: "walls: no cut", front: "walls: front cut", all: "walls: all cut" };
+const CUT_KEY = "gungors-floor-card.cut";
+const savedCut = () => { try { return localStorage.getItem(CUT_KEY); } catch (e) { return null; } };
 // icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
 const floorIcon = (id) => { const m = /(\d+)/.exec(id); return m && +m[1] <= 3 ? "mdi:home-floor-" + m[1] : "mdi:layers"; };
 
@@ -177,7 +191,9 @@ class GungorsFloorCard extends HTMLElement {
     const lighting = config.lighting == null ? {} : config.lighting;
     if (typeof lighting !== "object" || (lighting.default != null && typeof lighting.default !== "number"))
       err("'lighting' must be {default: a number}");
-    this._config = { base: "/local/gungors_floor/", dock_radius: 370, ...config };
+    if (config.cut != null && !CUTS.includes(config.cut)) err("'cut' must be none, front or all");
+    this._config = { base: "/local/gungors_floor/", dock_radius: 370, cut: "front", ...config };
+    if (!this._cut) this._cut = CUTS.includes(savedCut()) ? savedCut() : this._config.cut;
     if (!this._config.base.endsWith("/")) this._config.base += "/";
     this._floors = floors;
     this._fi = Math.min(this._fi || 0, floors.length - 1);
@@ -192,6 +208,17 @@ class GungorsFloorCard extends HTMLElement {
     this._map = f.map;
     this._fixed = f.fixed;
     this._rooms = f.rooms;
+  }
+
+  // next wall cut of the floor's renders (the page's "ready" cuts); kept in this browser
+  _nextCut() {
+    if (!this._page) return;
+    const cuts = this._page.cuts, i = cuts.indexOf(this._cut);
+    if (cuts.length < 2) return;
+    this._cut = cuts[(i + 1) % cuts.length];
+    try { localStorage.setItem(CUT_KEY, this._cut); } catch (e) { /* private mode: this session only */ }
+    this._post({ gf: "cut", mode: this._cut });
+    this._buildDock();                        // the button's icon (the page answers "ready" if the picture changes)
   }
 
   _nextFloor() {
@@ -266,7 +293,8 @@ class GungorsFloorCard extends HTMLElement {
     this._fed = false;                        // first full feed not sent yet
     this._dock.classList.remove("shown");     // the dock waits for the page's "shown"
     const floors = this._floors.map((f) => encodeURIComponent(f.floor)).join(",");
-    this._frame.src = this._config.base + "index.html?floors=" + floors + "&floor=" + encodeURIComponent(this._floor) + "&t=" + Date.now();
+    this._frame.src = this._config.base + "index.html?floors=" + floors + "&floor=" + encodeURIComponent(this._floor) +
+      "&cut=" + encodeURIComponent(this._cut) + "&t=" + Date.now();
   }
 
   _post(msg) { if (this._frame && this._frame.contentWindow) this._frame.contentWindow.postMessage(msg, "*"); }
@@ -280,7 +308,9 @@ class GungorsFloorCard extends HTMLElement {
         this._post({ gf: "floor", floor: this._floor });
         return;
       }
-      this._page = { W: d.W, H: d.H, entities: new Map(d.entities.map((e) => [e.id, e.type])) };
+      this._page = { W: d.W, H: d.H, entities: new Map(d.entities.map((e) => [e.id, e.type])),
+                     cuts: Array.isArray(d.cuts) ? d.cuts : ["none"] };
+      if (d.cut == null && this._cut !== "none") this._post({ gf: "cut", mode: this._cut });   // an older page
       this._sent = {};
       this._fed = false;
       this._wrap.style.aspectRatio = d.W + " / " + d.H;
@@ -445,12 +475,13 @@ class GungorsFloorCard extends HTMLElement {
   _buildDock() {
     const R = this._config.dock_radius, d = this._dock, H = this._page.H;
     if (!DOCK_MODES.some((m) => m.id === this._mode && m.icon)) this._mode = "lights";
-    const rb = R - 46, angles = [16, 37, 58, 79], single = this._floors.length < 2;
+    const rb = R - 46, angles = [8, 27, 47, 65, 82];
     const btns = DOCK_MODES.map((m, i) => {
-      const a = angles[i] * Math.PI / 180, isFloor = m.id === "floor";
-      const icon = isFloor ? floorIcon(this._floor) : m.icon;
-      const title = isFloor ? this._floor + (single ? "" : " (next floor)") : m.title;
-      return `<button class="btn${isFloor && single ? " single" : ""}" data-mode="${m.id}" title="${title}"
+      const a = angles[i] * Math.PI / 180, isFloor = m.id === "floor", isCut = m.id === "cut";
+      const single = isFloor ? this._floors.length < 2 : isCut && this._page.cuts.length < 2;
+      const icon = isFloor ? floorIcon(this._floor) : isCut ? CUT_ICON[this._cut] : m.icon;
+      const title = isFloor ? this._floor + (single ? "" : " (next floor)") : isCut ? CUT_TITLE[this._cut] : m.title;
+      return `<button class="btn${single ? " single" : ""}" data-mode="${m.id}" title="${title}"
                 style="left:${rb * Math.cos(a) - 35}px;top:${R - rb * Math.sin(a) - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
     }).join("");
     d.style.width = d.style.height = R + "px";
@@ -460,6 +491,7 @@ class GungorsFloorCard extends HTMLElement {
         <div class="title"></div><div class="list"></div></div>`;
     d.querySelectorAll(".btn").forEach((b) => b.addEventListener("click", () => {
       if (b.dataset.mode === "floor") { this._nextFloor(); return; }
+      if (b.dataset.mode === "cut") { this._nextCut(); return; }
       this._mode = b.dataset.mode;
       this._renderList(true);
     }));
