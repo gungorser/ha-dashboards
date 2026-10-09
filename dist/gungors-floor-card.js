@@ -62,6 +62,10 @@
  *         garaj_door:                 # background with a fixed value instead of the page's default:
  *           entity: none              #   cover: position 0-100 (0 closed, 100 open)
  *           value: 0                  #   light: [r, g, b, intensity 0-1], e.g. [255, 255, 255, 0] = off
+ *         dolap_kapi:                 # page-only cover (no Home Assistant entity): a slider in the dock,
+ *           entity: none              #   a tap opens/closes it; its position is kept in this browser
+ *           slider: true              #   (value: the first position, 0 closed by default)
+ *           name: Dolap
  *     - floor: kat1
  *       entities: ...
  *
@@ -73,7 +77,7 @@
  * temperatures. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.16.0";
+const CARD_VERSION = "1.17.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1 };     // page entity types that take a value
@@ -93,6 +97,9 @@ const CUT_ICON = { none: "mdi:wall", front: "mdi:box-cutter", all: "mdi:floor-pl
 const CUT_TITLE = { none: "walls: no cut", front: "walls: front cut", all: "walls: all cut" };
 const CUT_KEY = "gungors-floor-card.cut";
 const savedCut = () => { try { return localStorage.getItem(CUT_KEY); } catch (e) { return null; } };
+// position of a page-only cover (entity none + slider), kept per browser
+const LOCAL_KEY = "gungors-floor-card.local.";
+const savedLocal = (k) => { try { const v = localStorage.getItem(LOCAL_KEY + k); return v == null ? null : +v; } catch (e) { return null; } };
 // icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
 const floorIcon = (id) => { const m = /(\d+)/.exec(id); return m && +m[1] <= 3 ? "mdi:home-floor-" + m[1] : "mdi:layers"; };
 
@@ -159,9 +166,14 @@ class GungorsFloorCard extends HTMLElement {
       if (!f || typeof f !== "object" || !f.floor) err(`floors[${n}]: 'floor' is required (e.g. kat0)`);
       const ents = f.entities == null ? {} : f.entities;
       if (typeof ents !== "object" || Array.isArray(ents)) err(`${f.floor}: 'entities' must be a map: page entity -> settings (or none)`);
-      const map = new Map(), fixed = new Map();
+      const map = new Map(), fixed = new Map(), local = new Map();
       for (const [id, e] of Object.entries(ents)) {
         if (e === "none") { map.set(id, null); continue; }
+        if (e && typeof e === "object" && e.entity === "none" && e.slider === true) {   // page-only, driven from the dock
+          if (e.color != null && !isColor(e.color)) err(`${f.floor}.${id}: color must be "#rrggbb"`);
+          local.set(id, e);
+          continue;
+        }
         if (e && typeof e === "object" && e.entity === "none") {
           if (e.value != null) fixed.set(id, e.value);
           map.set(id, null);
@@ -183,7 +195,7 @@ class GungorsFloorCard extends HTMLElement {
         }
       }
       for (const [id, e] of map) if (e && e.gain != null && typeof e.gain !== "number") err(`${f.floor}.${id}: gain must be a number`);
-      return { floor: String(f.floor), map, fixed, rooms };
+      return { floor: String(f.floor), map, fixed, local, rooms };
     });
     const colors = config.colors == null ? {} : config.colors;
     if (typeof colors !== "object" || Array.isArray(colors)) err("'colors' must be a map: page entity type (or other) -> \"#rrggbb\"");
@@ -207,6 +219,7 @@ class GungorsFloorCard extends HTMLElement {
     this._floor = f.floor;
     this._map = f.map;
     this._fixed = f.fixed;
+    this._local = f.local;
     this._rooms = f.rooms;
   }
 
@@ -352,6 +365,13 @@ class GungorsFloorCard extends HTMLElement {
       if (domainOf(type) !== domain) out.push(`${id}: a ${type} entity, ${e.entity} is a ${domain}`);
       else if (!hass.states[e.entity]) out.push(`${id}: ${e.entity} is not in Home Assistant (set it to none)`);
     }
+    for (const [id, e] of this._local) {
+      const type = page.entities.get(id);
+      if (!type) out.push(`${id}: not an entity of the ${this._floor} page`);
+      else if (type !== "cover") out.push(`${id}: only a cover can be page-only (entity none with slider), not a ${type}`);
+      else if (e.value != null && !(Number.isInteger(e.value) && e.value >= 0 && e.value <= 100))
+        out.push(`${id}: value of a cover is a position 0-100 (0 closed, 100 open), not ${JSON.stringify(e.value)}`);
+    }
     return out.length ? out : null;
   }
 
@@ -402,8 +422,29 @@ class GungorsFloorCard extends HTMLElement {
       const v = this._value(id, e);
       if (v != null) send(id, { gf: "set", id, value: v });
     }
+    for (const [id, e] of this._local) {                // page-only covers: their position from this browser
+      if (e.color) send("color:" + id, { gf: "color", id, value: e.color });
+      send("available:" + id, { gf: "available", id, value: true });
+      if (this._drag !== id) send(id, { gf: "set", id, value: this._localValue(id) });
+    }
     if (!this._fed) { this._fed = true; this._post({ gf: "fed" }); }   // first inputs are in: the page may show itself
     this._clock();
+  }
+
+  // page-only cover: last position set in this browser, else its YAML value, else closed
+  _localValue(id) {
+    const k = this._floor + "." + id, mem = (this._lv || {})[k], v = mem != null ? mem : savedLocal(k);
+    if (v != null && Number.isFinite(v)) return Math.max(0, Math.min(100, Math.round(v)));
+    const e = this._local.get(id);
+    return e.value != null ? e.value : 0;
+  }
+
+  _setLocal(id, pct) {
+    const k = this._floor + "." + id;
+    (this._lv = this._lv || {})[k] = pct;             // this session; the browser keeps it too where it can
+    try { localStorage.setItem(LOCAL_KEY + k, String(pct)); } catch (e) { /* private mode: this session only */ }
+    this._feed();
+    this._renderList(true);
   }
 
   _value(id, e) {
@@ -424,6 +465,10 @@ class GungorsFloorCard extends HTMLElement {
 
   // ------------------------------------------------------------------ tap / hold -> the actions in YAML
   _run(id, which) {
+    if (this._local.has(id)) {                        // page-only cover: a tap opens or closes it
+      if (which === "tap") this._setLocal(id, this._localValue(id) > 0 ? 0 : 100);
+      return;
+    }
     const e = this._map.get(id);
     if (!e || e.selectable === false) return;         // not mapped (the page toggles it itself), none or not selectable
     const act = e[which + "_action"];
@@ -457,6 +502,7 @@ class GungorsFloorCard extends HTMLElement {
 
   // slider in the dock -> Home Assistant
   _command(id, pct) {
+    if (this._local.has(id)) { this._drag = null; this._setLocal(id, pct); return; }
     const e = this._map.get(id), st = this._hass.states[e.entity];
     if (this._page.entities.get(id) === "cover") {
       if (st.attributes.supported_features & 4) this._hass.callService("cover", "set_cover_position", { entity_id: e.entity, position: pct });
@@ -534,6 +580,12 @@ class GungorsFloorCard extends HTMLElement {
         const value = type === "light" ? (st.state !== "on" ? "off" : st.attributes.brightness != null ? pct + "%" : "on") : pct + "%";
         rows.push({ id, icon, on, label: e.name || id, value, pct, slider: !!e.slider });
       }
+      if (type === "cover")
+        for (const [id, e] of this._local) {
+          if (this._page.entities.get(id) !== "cover") continue;
+          const pct = this._localValue(id), on = pct > 0;
+          rows.push({ id, icon: on ? "mdi:door-sliding-open" : "mdi:door-sliding", on, label: e.name || id, value: pct + "%", pct, slider: true });
+        }
     } else {
       const s = hass.states[this._config.sun], a = s ? s.attributes : {};
       const t = (v) => (v && hhmm(v, this._tz())) || "-";
