@@ -27,7 +27,7 @@ to ha-floorplan; the dashboard that uses the card is ha-configs `dashboards/floo
 
 ## Claude agent
 
-The cards are owned by the `config` agent defined in ha-configs (`.claude/agents/config.md`).
+No agent: the main session works on the cards following ha-configs `CLAUDE.md` (card release steps there).
 
 ## Releasing
 
