@@ -25,6 +25,10 @@ to ha-floorplan; the dashboard that uses the card is ha-configs `dashboards/floo
 - **ha-floorplan**: the floor page and renders the floor card shows (page protocol documented there).
 - **ha-configs**: the dashboards that use these cards (`floorplan_3d`, `program`, `unnecessary`).
 
+## Claude agent
+
+The cards are owned by the `config` agent defined in ha-configs (`.claude/agents/config.md`).
+
 ## Releasing
 
 Bump the card's `VERSION` / `CARD_VERSION`, commit, then publish a GitHub release (`vX.Y.Z`).
