@@ -1,9 +1,15 @@
-# Publishes a GitHub release for every pushed vX.Y.Z tag, so HACS sees the new version.
+# Publishes a GitHub release, so HACS sees the new version: on a pushed vX.Y.Z tag, or run by hand
+# (workflow_dispatch) with the version, which tags the head of main.
 name: release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag, e.g. v1.7.0"
+        required: true
 
 permissions:
   contents: write
@@ -15,4 +21,5 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          TAG: ${{ inputs.version || github.ref_name }}
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --generate-notes
