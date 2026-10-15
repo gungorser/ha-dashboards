@@ -20,9 +20,9 @@
 //
 // View: the programs active now (each with stop: the running occurrence ends now, and pause /
 // resume: gungors.pause_program / resume_program, the calendar's `paused` attribute),
-// and a week grid, one row per room (an entity target without an area gets its own row),
-// one column per day. Tap an entry to edit it; "Yeni" adds one.
-const VERSION = "1.3.1";
+// and a week grid, one row per room with a program that week (an entity target without an
+// area gets its own row), one column per day. Tap an entry to edit it; "Yeni" adds one.
+const VERSION = "1.3.2";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -820,7 +820,7 @@ class GungorsProgramCard extends HTMLElement {
     const days = [...Array(7)].map((_, i) => addDays(this._week, i));
     const today = partsInTz(new Date(), tz).date;
     const now = new Date();
-    const rows = new Map(this._areasWithEntities().map((a) => [`a:${a.id}`, new Map()]));
+    const rows = new Map(); // only rows with a program this week
     for (const ev of this._events) {
       const keys = ev._p ? this._rowsOf(ev._p.target) : ["x:?"];
       for (const key of new Set(keys)) {
@@ -843,7 +843,7 @@ class GungorsProgramCard extends HTMLElement {
         return `<td>${evs.map((ev) => `<button class="ev ${ev._st <= now && ev._en > now ? "now" : ""} ${ev._p ? "" : "bad"}" data-a="edit" data-k="${esc(this._key(ev))}" title="${esc(`${ev.summary || ""} ${this._timeText(ev)}\n` + (ev._p ? Object.entries(ev._p.rules).map(([k, v]) => ruleText(k, v)).join(", ") : "Okunamayan açıklama"))}">
           <span class="tm">${this._tmHtml(ev)}</span><span class="sm">${esc(ev.summary || "(başlıksız)")}</span>${ev._p ? `<span class="mini">${Object.entries(ev._p.rules).map(([k, v]) => ruleMini(k, v)).join("")}</span>` : ""}</button>`).join("")}</td>`;
       }).join("")}</tr>`).join("");
-    return `<div class="wk"><table>${head}${body || `<tr><td colspan="8" class="empty">Programlı oda yok.</td></tr>`}</table></div>`;
+    return `<div class="wk"><table>${head}${body || `<tr><td colspan="8" class="empty">Bu hafta program yok.</td></tr>`}</table></div>`;
   }
 
   _listHtml() {
