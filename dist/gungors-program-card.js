@@ -7,8 +7,12 @@
 //   title: Program                  # optional
 //
 // An entry is a program: a time window (may repeat), a target (areas and/or entities with the
-// gungors `program` feature) and rules. The entry's description holds them as JSON:
-//   {"target": ["Salon", "light.melike_light"], "rules": {"on": true, "brightness": {"max": 40}}}
+// gungors `program` feature) and rules. The entry's description holds them as YAML, the rules
+// grouped by domain (the older JSON form with one `rules` key is still read):
+//   target: [Salon, light.melike_light]
+//   light:
+//     on: true
+//     brightness: {max: 40}
 // Rule attributes per domain: light on / brightness (%) / color / color_temp (K), climate
 // hvac_mode / temperature, cover position (%). Each rule is a value (eşit) or a min/max.
 // The integration checks every save: an unreadable entry or one that conflicts with an
@@ -17,7 +21,7 @@
 // View: the programs active now (each with "Şimdi bitir": the running occurrence ends now),
 // and a week grid, one row per room (an entity target without an area gets its own row),
 // one column per day. Tap an entry to edit it; "Yeni" adds one.
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -83,17 +87,163 @@ function parseRrule(r) {
     return { mode: "weekly", days: (m.BYDAY || "").split(",").filter(Boolean), raw: r };
   return { mode: "custom", days: [], raw: r };
 }
+// A small YAML reader for program descriptions: block mappings and sequences, flow [..] and
+// {..}, quoted and plain scalars (YAML 1.1 booleans, as Home Assistant reads them). Anything
+// else throws, and the entry is shown as raw text.
+function yamlScalar(t) {
+  if (/^(true|yes|on)$/i.test(t)) return true;
+  if (/^(false|no|off)$/i.test(t)) return false;
+  if (/^(null|~|)$/i.test(t)) return null;
+  if (/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(t)) return Number(t);
+  return t;
+}
+function yamlFlow(src) {
+  let i = 0;
+  const ws = () => { while (i < src.length && /\s/.test(src[i])) i++; };
+  const quoted = () => {
+    const q = src[i++];
+    let out = "";
+    while (i < src.length) {
+      if (src[i] === q) {
+        if (q === "'" && src[i + 1] === "'") { out += "'"; i += 2; continue; }
+        break;
+      }
+      if (q === '"' && src[i] === "\\") { out += JSON.parse(`"${src.slice(i, i + 2)}"`); i += 2; }
+      else out += src[i++];
+    }
+    if (src[i] !== q) throw new Error("unterminated string");
+    i++;
+    return out;
+  };
+  const value = (inFlow) => {
+    ws();
+    const c = src[i];
+    if (c === "[") {
+      i++; const arr = []; ws();
+      if (src[i] === "]") { i++; return arr; }
+      for (;;) { arr.push(value(true)); ws(); if (src[i] === ",") { i++; continue; } if (src[i] === "]") { i++; return arr; } throw new Error("bad list"); }
+    }
+    if (c === "{") {
+      i++; const obj = {}; ws();
+      if (src[i] === "}") { i++; return obj; }
+      for (;;) {
+        ws();
+        const k = src[i] === '"' || src[i] === "'" ? quoted() : plain(true, true);
+        ws(); if (src[i] !== ":") throw new Error("bad mapping"); i++;
+        obj[k] = value(true); ws();
+        if (src[i] === ",") { i++; continue; }
+        if (src[i] === "}") { i++; return obj; }
+        throw new Error("bad mapping");
+      }
+    }
+    if (c === '"' || c === "'") return quoted();
+    return yamlScalar(plain(inFlow, false));
+  };
+  const plain = (inFlow, isKey) => {
+    const start = i;
+    while (i < src.length && !(inFlow && /[,\]}]/.test(src[i])) && !(isKey && src[i] === ":")) i++;
+    return src.slice(start, i).trim();
+  };
+  const v = value(false);
+  ws();
+  if (i < src.length) throw new Error("trailing text");
+  return v;
+}
+function yamlParse(text) {
+  const lines = [];
+  for (const raw of text.replace(/\t/g, "  ").split(/\r?\n/)) {
+    let q = null, cut = raw.length;
+    for (let k = 0; k < raw.length; k++) {
+      const ch = raw[k];
+      if (q) { if (ch === q) q = null; }
+      else if (ch === '"' || ch === "'") q = ch;
+      else if (ch === "#" && (k === 0 || /\s/.test(raw[k - 1]))) { cut = k; break; }
+    }
+    const line = raw.slice(0, cut).replace(/\s+$/, "");
+    if (line.trim()) lines.push({ ind: line.length - line.trimStart().length, text: line.trim() });
+  }
+  let i = 0;
+  const keyOf = (t) => {
+    const m = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^:]+?)\s*:(\s+|$)(.*)$/.exec(t);
+    if (!m) throw new Error("expected key: value");
+    const k = /^["']/.test(m[1]) ? yamlFlow(m[1]) : m[1];
+    return [k, m[3]];
+  };
+  const block = (ind) => {
+    if (lines[i].text.startsWith("- ") || lines[i].text === "-") {
+      const arr = [];
+      while (i < lines.length && lines[i].ind === ind && (lines[i].text.startsWith("- ") || lines[i].text === "-")) {
+        const rest = lines[i].text.slice(1).trim(); i++;
+        if (!rest) throw new Error("nested list items are not supported");
+        arr.push(yamlFlow(rest));
+      }
+      return arr;
+    }
+    const obj = {};
+    while (i < lines.length && lines[i].ind === ind) {
+      const [k, rest] = keyOf(lines[i].text); i++;
+      if (rest) obj[k] = yamlFlow(rest);
+      else if (i < lines.length && (lines[i].ind > ind || (lines[i].ind === ind && lines[i].text.startsWith("-")))) obj[k] = block(lines[i].ind);
+      else obj[k] = null;
+    }
+    return obj;
+  };
+  if (!lines.length) return null;
+  const v = lines.length === 1 && /^[[{"']/.test(lines[0].text) ? yamlFlow(lines[0].text) : block(lines[0].ind);
+  if (i < lines.length && lines.length !== 1) throw new Error("bad indentation");
+  return v;
+}
+const DOMAINS = Object.keys(DOMAIN_NAMES);
 function parseProgram(raw) {
   if (!raw || !raw.trim()) return null;
-  try {
-    const d = JSON.parse(raw);
-    if (!d || typeof d !== "object" || Array.isArray(d)) return null;
-    const target = typeof d.target === "string" ? [d.target] : d.target;
-    if (!Array.isArray(target) || !d.rules || typeof d.rules !== "object") return null;
-    return { target, rules: d.rules };
-  } catch (e) {
-    return null;
+  let d;
+  try { d = JSON.parse(raw); } catch (e) { try { d = yamlParse(raw); } catch (e2) { return null; } }
+  if (!d || typeof d !== "object" || Array.isArray(d)) return null;
+  if (Object.keys(d).some((k) => k !== "target" && k !== "rules" && !DOMAINS.includes(k))) return null;
+  const target = typeof d.target === "string" ? [d.target] : d.target;
+  if (!Array.isArray(target) || !target.length) return null;
+  const rules = {};
+  const add = (attr, v, domain) => {
+    const a = ATTRS[attr];
+    if (!a || (domain && a.domain !== domain) || attr in rules) return false;
+    rules[attr] = attr === "hvac_mode" && v === false ? "off" : v;
+    return true;
+  };
+  if (d.rules !== undefined) {
+    if (!d.rules || typeof d.rules !== "object") return null;
+    for (const [k, v] of Object.entries(d.rules)) if (!add(k, v)) return null;
   }
+  for (const dom of DOMAINS) {
+    if (d[dom] === undefined) continue;
+    if (!d[dom] || typeof d[dom] !== "object" || Array.isArray(d[dom])) return null;
+    for (const [k, v] of Object.entries(d[dom])) if (!add(k, v, dom)) return null;
+  }
+  return Object.keys(rules).length ? { target, rules } : null;
+}
+// The description text of a program: YAML, rules grouped by domain (as the integration writes it).
+function yamlScalarText(v) {
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") return String(v);
+  if (Array.isArray(v)) return `[${v.map(yamlScalarText).join(", ")}]`;
+  const t = String(v);
+  if (/^[^\s\-?:,[\]{}#&*!|>'"%@`][^:#,[\]{}]*$/.test(t) && !/^(y|n|yes|no|true|false|on|off|null|~|[-+.]?\d.*|\.(inf|nan))$/i.test(t) && t === t.trim()) return t;
+  return JSON.stringify(t);
+}
+function dumpProgram(target, rules) {
+  const out = [`target: ${yamlScalarText(target)}`];
+  for (const dom of DOMAINS) {
+    const attrs = Object.keys(rules).filter((k) => ATTRS[k] && ATTRS[k].domain === dom);
+    if (!attrs.length) continue;
+    out.push(`${dom}:`);
+    for (const k of attrs) {
+      const v = rules[k];
+      const text = v && typeof v === "object" && !Array.isArray(v)
+        ? `{${["eq", "min", "max"].filter((o) => o in v).map((o) => `${o}: ${yamlScalarText(v[o])}`).join(", ")}}`
+        : yamlScalarText(v);
+      out.push(`  ${k}: ${text}`);
+    }
+  }
+  return out.join("\n") + "\n";
 }
 // {attr: value | {eq|min|max}} -> rule lines [{attr, op, value}]
 function linesOf(rules) {
@@ -353,7 +503,7 @@ class GungorsProgramCard extends HTMLElement {
   _programText(f) {
     if (f.rawMode) return f.rawDesc;
     const target = f.targets.map((t) => (String(t).includes(".") ? t : this._areaName(t)));
-    return JSON.stringify({ target, rules: this._rulesOf(f.lines) });
+    return dumpProgram(target, this._rulesOf(f.lines));
   }
 
   _validate(f) {
@@ -501,7 +651,7 @@ class GungorsProgramCard extends HTMLElement {
       f.lines.splice(+el.dataset.i, 1);
       this._render();
     } else if (a === "toraw") {
-      f.rawDesc = JSON.stringify(JSON.parse(this._programText(f)), null, 2);
+      f.rawDesc = this._programText(f);
       f.rawMode = true; f.rawBad = false;
       this._render();
     } else if (a === "toform") {
@@ -673,11 +823,11 @@ class GungorsProgramCard extends HTMLElement {
           <div class="field"><label>Bitiş tarihi</label><input type="date" data-f="eDate" value="${esc(f.eDate)}"></div>
           <div class="field"><label>Bitiş saati</label><input type="time" data-f="eTime" value="${esc(f.eTime)}"></div></div>`;
     const program = f.rawMode
-      ? `<div class="field"><label>Program (JSON)</label>
+      ? `<div class="field"><label>Program (YAML)</label>
           ${f.rawBad ? `<div class="err">Bu kaydın açıklaması program olarak okunamadı. Düzeltip forma geçebilirsin.</div>` : ""}
-          <textarea data-f="rawDesc" aria-label="Program (JSON)">${esc(f.rawDesc)}</textarea>
+          <textarea data-f="rawDesc" aria-label="Program (YAML)">${esc(f.rawDesc)}</textarea>
           <button class="btn small" data-a="toform" style="margin-top:6px">Forma geç</button></div>`
-      : `${this._targetsHtml(f)}${this._rulesHtml(f)}<button class="link" data-a="toraw">Ham JSON'u düzenle</button>`;
+      : `${this._targetsHtml(f)}${this._rulesHtml(f)}<button class="link" data-a="toraw">YAML olarak düzenle</button>`;
     const series = f.orig && f.orig.rrule ? `<div class="note">Tekrarlı bir programı düzenlemek tüm seriyi değiştirir.</div>` : "";
     return `<div class="head"><div class="title">${f.orig ? "Programı düzenle" : "Yeni program"}</div></div>
       <div class="form">
