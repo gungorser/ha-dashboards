@@ -22,7 +22,7 @@
 // resume: gungors.pause_program / resume_program, the calendar's `paused` attribute),
 // and a week grid, one row per room (an entity target without an area gets its own row),
 // one column per day. Tap an entry to edit it; "Yeni" adds one.
-const VERSION = "1.2.1";
+const VERSION = "1.3.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -274,6 +274,46 @@ function ruleText(attr, v) {
   return `${a.label} ${val(v)}`;
 }
 
+// A rule as an icon and a short value (the full text is the chip's tooltip).
+const eqOf = (v) => (v && typeof v === "object" && !Array.isArray(v) ? ("eq" in v ? v.eq : undefined) : v);
+function ruleIcon(attr, v) {
+  const eq = eqOf(v);
+  switch (attr) {
+    case "on": return eq === false ? "mdi:lightbulb-off" : "mdi:lightbulb-on";
+    case "brightness": return "mdi:brightness-6";
+    case "color": return "mdi:palette";
+    case "color_temp": return "mdi:white-balance-sunny";
+    case "hvac_mode": return eq === "off" ? "mdi:radiator-off" : "mdi:radiator";
+    case "temperature": return "mdi:thermometer";
+    case "position": return eq === 0 ? "mdi:roller-shade-closed" : "mdi:roller-shade";
+    default: return "mdi:help-circle-outline";
+  }
+}
+function ruleValue(attr, v) {
+  const a = ATTRS[attr];
+  if (!a) return "";
+  const eq = eqOf(v);
+  if (a.kind === "color") {
+    const rgb = Array.isArray(eq) ? eq : COLOR_NAMES[eq];
+    return rgb ? `<span class="sw" style="background:${hex(rgb)}"></span>` : esc(eq);
+  }
+  if (a.kind === "bool") return eq ? "Açık" : "Kapalı";
+  if (attr === "hvac_mode") return eq === "off" ? "Kapalı" : "Açık";
+  if (attr === "position" && (eq === 0 || eq === 100)) return eq ? "Açık" : "Kapalı";
+  const unit = a.unit === "%" ? "%" : a.unit === "K" ? "K" : "°";
+  const n = (x) => `${String(x).replace(".", ",")}${unit}`;
+  if (eq !== undefined) return esc(n(eq));
+  if ("min" in v && "max" in v) return esc(`${String(v.min).replace(".", ",")}–${n(v.max)}`);
+  return esc("min" in v ? `≥ ${n(v.min)}` : `≤ ${n(v.max)}`);
+}
+const ruleChip = (attr, v) =>
+  `<span class="chip" title="${esc(ruleText(attr, v))}"><ha-icon icon="${ruleIcon(attr, v)}"></ha-icon>${ruleValue(attr, v)}</span>`;
+const ruleMini = (attr, v) => {
+  const eq = eqOf(v);
+  if (attr === "color" && (Array.isArray(eq) || COLOR_NAMES[eq])) return ruleValue(attr, v);
+  return `<ha-icon icon="${ruleIcon(attr, v)}"></ha-icon>`;
+};
+
 const CSS = `
 :host{display:block}
 ha-card{padding:16px;color:var(--primary-text-color)}
@@ -286,7 +326,11 @@ ha-card{padding:16px;color:var(--primary-text-color)}
 .sum{font-weight:500}
 .sub{font-size:.85rem;color:var(--secondary-text-color)}
 .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
-.chip{font-size:.75rem;padding:2px 8px;border-radius:10px;background:var(--secondary-background-color);border:1px solid var(--divider-color)}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:.8rem;padding:2px 9px 2px 6px;border-radius:12px;background:var(--secondary-background-color);border:1px solid var(--divider-color)}
+.chip ha-icon{--mdc-icon-size:16px;display:inline-flex}
+.sw{display:inline-block;width:11px;height:11px;border-radius:50%;border:1px solid var(--divider-color)}
+.ev .mini{display:flex;flex-wrap:wrap;align-items:center;gap:3px;margin-top:2px}
+.ev .mini ha-icon{--mdc-icon-size:14px;display:inline-flex}
 .chip.warn{color:var(--error-color);border-color:var(--error-color)}
 .nav{display:flex;align-items:center;gap:8px}
 .wk{overflow-x:auto}
@@ -726,7 +770,7 @@ class GungorsProgramCard extends HTMLElement {
 
   _ruleChips(ev) {
     if (!ev._p) return `<span class="chip warn">Okunamayan açıklama</span>`;
-    return Object.entries(ev._p.rules).map(([k, v]) => `<span class="chip">${esc(ruleText(k, v))}</span>`).join("");
+    return Object.entries(ev._p.rules).map(([k, v]) => ruleChip(k, v)).join("");
   }
 
   _activeHtml() {
@@ -775,7 +819,7 @@ class GungorsProgramCard extends HTMLElement {
       .map(([key, cells]) => `<tr><td class="room">${esc(key === "x:?" ? "Okunamayan" : this._rowName(key))}</td>${days.map((_, i) => {
         const evs = (cells.get(i) || []).sort((a, b) => a._st - b._st);
         return `<td>${evs.map((ev) => `<button class="ev ${ev._st <= now && ev._en > now ? "now" : ""} ${ev._p ? "" : "bad"}" data-a="edit" data-k="${esc(this._key(ev))}" title="${esc(ev._p ? Object.entries(ev._p.rules).map(([k, v]) => ruleText(k, v)).join(", ") : "Okunamayan açıklama")}">
-          <span class="tm">${esc(this._timeText(ev))}</span><br>${esc(ev.summary || "(başlıksız)")}</button>`).join("")}</td>`;
+          <span class="tm">${esc(this._timeText(ev))}</span><br>${esc(ev.summary || "(başlıksız)")}${ev._p ? `<span class="mini">${Object.entries(ev._p.rules).map(([k, v]) => ruleMini(k, v)).join("")}</span>` : ""}</button>`).join("")}</td>`;
       }).join("")}</tr>`).join("");
     return `<div class="wk"><table>${head}${body || `<tr><td colspan="8" class="empty">Programlı oda yok.</td></tr>`}</table></div>`;
   }
