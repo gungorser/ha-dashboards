@@ -22,7 +22,7 @@
 // resume: gungors.pause_program / resume_program, the calendar's `paused` attribute),
 // and a week grid, one row per room (an entity target without an area gets its own row),
 // one column per day. Tap an entry to edit it; "Yeni" adds one.
-const VERSION = "1.3.0";
+const VERSION = "1.3.1";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -315,7 +315,7 @@ const ruleMini = (attr, v) => {
 };
 
 const CSS = `
-:host{display:block}
+:host{display:block;container-type:inline-size}
 ha-card{padding:16px;color:var(--primary-text-color)}
 .head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
 .title{font-size:1.25rem;font-weight:500}
@@ -334,7 +334,7 @@ ha-card{padding:16px;color:var(--primary-text-color)}
 .chip.warn{color:var(--error-color);border-color:var(--error-color)}
 .nav{display:flex;align-items:center;gap:8px}
 .wk{overflow-x:auto}
-table{border-collapse:collapse;width:100%;min-width:640px;table-layout:fixed}
+table{border-collapse:collapse;width:100%;table-layout:fixed}
 th,td{border:1px solid var(--divider-color);padding:4px;vertical-align:top;font-size:.8rem}
 th{font-weight:500;color:var(--secondary-text-color);background:var(--secondary-background-color)}
 th.room{width:110px;text-align:left}
@@ -344,6 +344,21 @@ td.room{font-weight:500}
 .ev.now{border-left-color:var(--success-color,#43a047)}
 .ev.bad{border-left-color:var(--error-color)}
 .ev .tm{color:var(--secondary-text-color)}
+.ev .sm{display:block;overflow:hidden;text-overflow:ellipsis}
+th .nw,th .nd{display:none}
+@container (max-width: 640px) {
+  ha-card{padding:12px 8px}
+  th,td{padding:2px;font-size:.7rem}
+  th.room{width:58px}
+  td.room{word-break:break-word;hyphens:auto}
+  th .wd{display:none}
+  th .nw,th .nd{display:block}
+  .ev{padding:2px 3px;font-size:.68rem;border-left-width:2px}
+  .ev .te,.ev .sm{display:none}
+  .ev .mini ha-icon{--mdc-icon-size:12px}
+  .ev .mini{gap:1px}
+  .sw{width:9px;height:9px}
+}
 .empty{padding:16px 4px;color:var(--secondary-text-color);text-align:center}
 .err{padding:8px 10px;margin:8px 0;border-radius:6px;border:1px solid var(--error-color);color:var(--error-color);font-size:.875rem}
 .note{font-size:.75rem;color:var(--secondary-text-color);margin-top:4px}
@@ -768,6 +783,13 @@ class GungorsProgramCard extends HTMLElement {
     return `${s.time}–${e.time}${days > 0 ? ` (+${days})` : ""}`;
   }
 
+  // the start time, then the rest (hidden in the narrow grid)
+  _tmHtml(ev) {
+    const t = this._timeText(ev);
+    const i = t.indexOf("–");
+    return i < 0 ? esc(t) : `${esc(t.slice(0, i))}<span class="te">${esc(t.slice(i))}</span>`;
+  }
+
   _ruleChips(ev) {
     if (!ev._p) return `<span class="chip warn">Okunamayan açıklama</span>`;
     return Object.entries(ev._p.rules).map(([k, v]) => ruleChip(k, v)).join("");
@@ -813,13 +835,13 @@ class GungorsProgramCard extends HTMLElement {
         });
       }
     }
-    const head = `<tr><th class="room">Oda</th>${days.map((d, i) => `<th class="${d === today ? "today" : ""}">${WD[i][1]} ${fmtDay(d)}</th>`).join("")}</tr>`;
+    const head = `<tr><th class="room">Oda</th>${days.map((d, i) => `<th class="${d === today ? "today" : ""}"><span class="wd">${WD[i][1]} ${fmtDay(d)}</span><span class="nw">${WD[i][1]}</span><span class="nd">${+d.slice(8)}</span></th>`).join("")}</tr>`;
     const body = [...rows.entries()]
       .sort((a, b) => this._rowName(a[0]).localeCompare(this._rowName(b[0]), "tr"))
-      .map(([key, cells]) => `<tr><td class="room">${esc(key === "x:?" ? "Okunamayan" : this._rowName(key))}</td>${days.map((_, i) => {
+      .map(([key, cells]) => `<tr><td class="room">${esc(key === "x:?" ? "Hatalı" : this._rowName(key))}</td>${days.map((_, i) => {
         const evs = (cells.get(i) || []).sort((a, b) => a._st - b._st);
-        return `<td>${evs.map((ev) => `<button class="ev ${ev._st <= now && ev._en > now ? "now" : ""} ${ev._p ? "" : "bad"}" data-a="edit" data-k="${esc(this._key(ev))}" title="${esc(ev._p ? Object.entries(ev._p.rules).map(([k, v]) => ruleText(k, v)).join(", ") : "Okunamayan açıklama")}">
-          <span class="tm">${esc(this._timeText(ev))}</span><br>${esc(ev.summary || "(başlıksız)")}${ev._p ? `<span class="mini">${Object.entries(ev._p.rules).map(([k, v]) => ruleMini(k, v)).join("")}</span>` : ""}</button>`).join("")}</td>`;
+        return `<td>${evs.map((ev) => `<button class="ev ${ev._st <= now && ev._en > now ? "now" : ""} ${ev._p ? "" : "bad"}" data-a="edit" data-k="${esc(this._key(ev))}" title="${esc(`${ev.summary || ""} ${this._timeText(ev)}\n` + (ev._p ? Object.entries(ev._p.rules).map(([k, v]) => ruleText(k, v)).join(", ") : "Okunamayan açıklama"))}">
+          <span class="tm">${this._tmHtml(ev)}</span><span class="sm">${esc(ev.summary || "(başlıksız)")}</span>${ev._p ? `<span class="mini">${Object.entries(ev._p.rules).map(([k, v]) => ruleMini(k, v)).join("")}</span>` : ""}</button>`).join("")}</td>`;
       }).join("")}</tr>`).join("");
     return `<div class="wk"><table>${head}${body || `<tr><td colspan="8" class="empty">Programlı oda yok.</td></tr>`}</table></div>`;
   }
