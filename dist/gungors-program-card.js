@@ -22,7 +22,7 @@
 // resume: gungors.pause_program / resume_program, the calendar's `paused` attribute),
 // and a week grid, one row per room (an entity target without an area gets its own row),
 // one column per day. Tap an entry to edit it; "Yeni" adds one.
-const VERSION = "1.2.0";
+const VERSION = "1.2.1";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -609,7 +609,8 @@ class GungorsProgramCard extends HTMLElement {
     const event = {
       summary: ev.summary,
       description: ev.description || "",
-      dtstart: ev.start.dateTime || ev.start.date,
+      // both in UTC: Home Assistant wants the same timezone on start and end
+      dtstart: ev.start.dateTime ? new Date(ev.start.dateTime).toISOString() : ev.start.date,
       dtend: ev.start.dateTime ? end.toISOString() : ev.end.date,
     };
     if (!ev.start.dateTime) {
