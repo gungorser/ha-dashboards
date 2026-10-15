@@ -18,10 +18,11 @@
 // The integration checks every save: an unreadable entry or one that conflicts with an
 // overlapping entry on an entity is refused, and its message is shown in the editor.
 //
-// View: the programs active now (each with "Şimdi bitir": the running occurrence ends now),
+// View: the programs active now (each with stop: the running occurrence ends now, and pause /
+// resume: gungors.pause_program / resume_program, the calendar's `paused` attribute),
 // and a week grid, one row per room (an entity target without an area gets its own row),
 // one column per day. Tap an entry to edit it; "Yeni" adds one.
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -324,6 +325,9 @@ textarea{min-height:140px;font-family:var(--code-font-family,monospace);font-siz
 .btn.primary{background:var(--primary-color);border-color:var(--primary-color);color:var(--text-primary-color,#fff)}
 .btn.danger{color:var(--error-color);border-color:var(--error-color)}
 .btn:disabled{opacity:.5;cursor:default}
+.ibtn{width:40px;height:40px;flex:none;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;border:1px solid var(--divider-color);background:none;color:var(--primary-text-color);cursor:pointer;padding:0}
+.ibtn:hover{background:var(--secondary-background-color)}
+.act.paused .sum{color:var(--secondary-text-color)}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--primary-color);outline-offset:1px}
 `;
 
@@ -347,11 +351,15 @@ class GungorsProgramCard extends HTMLElement {
   set hass(h) {
     const first = !this._hass;
     this._hass = h;
+    const cal = h.states[this._config?.entity || DEFAULT_CAL];
+    const changed = cal !== this._calState;
+    this._calState = cal;
     if (first) {
       this._week = this._monday(partsInTz(new Date(), this._tz).date);
       this._load();
-    }
+    } else if (changed && !this._form) this._load(); // entries or pauses changed
   }
+  get _paused() { return this._calState?.attributes?.paused || []; }
 
   getCardSize() { return 10; }
   static getStubConfig() { return { entity: DEFAULT_CAL }; }
@@ -620,6 +628,15 @@ class GungorsProgramCard extends HTMLElement {
     }
   }
 
+  async _pause(ev, resume) {
+    try {
+      await this._hass.callService("gungors", resume ? "resume_program" : "pause_program", { uid: ev.uid }, { entity_id: this._config.entity });
+    } catch (e) {
+      this._error = `${resume ? "Devam ettirilemedi" : "Duraklatılamadı"}: ${e?.message || e}`;
+      this._render();
+    }
+  }
+
   // ---------- events ----------
   _onClick(e) {
     const el = e.target.closest("[data-a]");
@@ -629,6 +646,7 @@ class GungorsProgramCard extends HTMLElement {
     if (a === "new") { this._openForm(this._newForm()); }
     else if (a === "edit") { this._openForm(this._formFromEvent(this._find(el.dataset.k))); }
     else if (a === "end") { this._endNow(this._find(el.dataset.k)); }
+    else if (a === "pause" || a === "resume") { this._pause(this._find(el.dataset.k), a === "resume"); }
     else if (a === "prev" || a === "next" || a === "today") {
       this._week = a === "today" ? this._monday(partsInTz(new Date(), this._tz).date) : addDays(this._week, a === "prev" ? -7 : 7);
       this._load();
@@ -714,13 +732,18 @@ class GungorsProgramCard extends HTMLElement {
     if (!this._active.length) return `<div class="empty">Şu an aktif program yok.</div>`;
     return this._active.map((ev) => {
       const where = ev._p ? [...new Set(this._rowsOf(ev._p.target).map((k) => this._rowName(k)))].join(", ") : "";
-      return `<div class="act">
-        <div class="t" data-a="edit" data-k="${esc(this._key(ev))}">
-          <div class="sum">${esc(ev.summary || "(başlıksız)")}</div>
+      const paused = this._paused.includes(ev.uid);
+      const k = esc(this._key(ev));
+      return `<div class="act ${paused ? "paused" : ""}">
+        <div class="t" data-a="edit" data-k="${k}">
+          <div class="sum">${esc(ev.summary || "(başlıksız)")}${paused ? ` <span class="chip">Duraklatıldı</span>` : ""}</div>
           <div class="sub">${esc([where, `${this._timeText(ev)} bitiş ${partsInTz(ev._en, this._tz).time}`].filter(Boolean).join(" · "))}</div>
           <div class="chips">${this._ruleChips(ev)}</div>
         </div>
-        <button class="btn small" data-a="end" data-k="${esc(this._key(ev))}">Şimdi bitir</button>
+        ${paused
+          ? `<button class="ibtn" data-a="resume" data-k="${k}" title="Devam ettir" aria-label="Devam ettir"><ha-icon icon="mdi:play"></ha-icon></button>`
+          : `<button class="ibtn" data-a="pause" data-k="${k}" title="Duraklat" aria-label="Duraklat"><ha-icon icon="mdi:pause"></ha-icon></button>`}
+        <button class="ibtn" data-a="end" data-k="${k}" title="Şimdi bitir" aria-label="Şimdi bitir"><ha-icon icon="mdi:stop"></ha-icon></button>
       </div>`;
     }).join("");
   }
