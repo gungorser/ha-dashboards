@@ -22,7 +22,7 @@
 // resume: gungors.pause_program / resume_program, the calendar's `paused` attribute),
 // and a week grid, one row per room with a program that week (an entity target without an
 // area gets its own row), one column per day. Tap an entry to edit it; "Yeni" adds one.
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -34,7 +34,7 @@ const ATTRS = {
   temperature: { domain: "climate", label: "Sıcaklık", kind: "num", range: true, unit: "°C", min: 5, max: 35, step: 0.5 },
   position: { domain: "cover", label: "Perde pozisyonu", kind: "num", range: true, unit: "%", min: 0, max: 100, step: 5 },
 };
-const OPS = [["eq", "eşit"], ["min", "en az"], ["max", "en çok"]];
+const OPS = [["eq", "="], ["min", "≥"], ["max", "≤"]];
 const DOMAIN_NAMES = { light: "Işık", climate: "Isıtma", cover: "Perde" };
 const WD = [["MO", "Pzt"], ["TU", "Sal"], ["WE", "Çar"], ["TH", "Per"], ["FR", "Cum"], ["SA", "Cmt"], ["SU", "Paz"]];
 
@@ -380,10 +380,11 @@ textarea{min-height:140px;font-family:var(--code-font-family,monospace);font-siz
 .day,.tg{padding:6px 10px;border-radius:6px;border:1px solid var(--divider-color);background:none;color:inherit;font:inherit;cursor:pointer}
 .day{min-width:44px}
 .day.on,.tg.on{background:var(--primary-color);border-color:var(--primary-color);color:var(--text-primary-color,#fff)}
-.rule{display:grid;grid-template-columns:1.4fr 1fr 1.2fr auto auto;gap:6px;align-items:center}
-.tog{display:inline-flex;align-items:center;gap:4px;font-size:.8rem;white-space:nowrap;cursor:pointer}
-.tog input{width:auto;min-height:0;margin:0;accent-color:var(--primary-color)}
-@container (max-width: 520px){.rule{grid-template-columns:1fr 1fr auto}.rule .tog{grid-column:1 / 3}}
+.rule{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(56px,.5fr) minmax(0,1fr) 52px 32px;gap:6px;align-items:center}
+.rule.hdr{font-size:.75rem;color:var(--secondary-text-color);margin-bottom:-2px}
+.rule.hdr span{grid-column:4;text-align:center}
+.rule .tog{margin:0;display:flex;justify-content:center;align-items:center;cursor:pointer;min-height:40px}
+.rule .tog input{width:18px;height:18px;min-height:0;margin:0;accent-color:var(--primary-color);cursor:pointer}
 .x{background:none;border:0;color:var(--secondary-text-color);cursor:pointer;font-size:1.2rem;padding:4px 8px}
 .link{background:none;border:0;padding:0;color:var(--primary-color);font:inherit;font-size:.875rem;cursor:pointer;align-self:flex-start}
 .actions{display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;margin-top:4px}
@@ -606,7 +607,7 @@ class GungorsProgramCard extends HTMLElement {
     }
     for (const [attr, ops] of Object.entries(seen)) {
       if (new Set(ops).size !== ops.length || (ops.includes("eq") && ops.length > 1))
-        return `${ATTRS[attr].label}: ya bir eşit değeri ya da en az / en çok verilebilir.`;
+        return `${ATTRS[attr].label}: ya = ya da ≥ / ≤ verilebilir.`;
     }
     const rules = this._rulesOf(f.lines);
     if ("color" in rules && "color_temp" in rules) return "Renk ve renk sıcaklığı aynı programda olamaz.";
@@ -901,7 +902,7 @@ class GungorsProgramCard extends HTMLElement {
       const attrs = Object.entries(ATTRS).filter(([k, a]) => domains.has(a.domain) || k === l.attr);
       const a = ATTRS[l.attr];
       const attrSel = `<select data-ri="${i}" data-rk="attr" aria-label="Özellik"><option value="" ${l.attr ? "" : "selected"} disabled>Özellik seç</option>${attrs.map(([k, x]) => `<option value="${k}" ${k === l.attr ? "selected" : ""}>${esc(DOMAIN_NAMES[x.domain])}: ${esc(x.label)}</option>`).join("")}</select>`;
-      const ops = a && a.range ? OPS : [["eq", "eşit"]];
+      const ops = a && a.range ? OPS : [OPS[0]];
       const opSel = `<select data-ri="${i}" data-rk="op" aria-label="İşlem" ${a ? "" : "disabled"}>${ops.map(([k, x]) => `<option value="${k}" ${k === l.op ? "selected" : ""}>${x}</option>`).join("")}</select>`;
       let val = `<span></span>`;
       if (a?.kind === "num") val = `<input type="number" data-ri="${i}" data-rk="value" min="${a.min}" max="${a.max}" step="${a.step}" value="${esc(l.value)}" placeholder="${esc(a.unit)}" aria-label="Değer">`;
@@ -911,11 +912,11 @@ class GungorsProgramCard extends HTMLElement {
         const v = Array.isArray(l.value) ? hex(l.value) : COLOR_NAMES[l.value] ? hex(COLOR_NAMES[l.value]) : (l.value || "#ff0000");
         val = `<input type="color" data-ri="${i}" data-rk="value" value="${esc(v)}" aria-label="Renk">`;
       }
-      const sw = `<label class="tog" title="Açık: sistem kuralı kendisi uygular. Kapalı: sadece kurala uymayan değişikliğe izin vermez."><input type="checkbox" data-ri="${i}" data-rk="set" ${l.set ? "checked" : ""} ${a ? "" : "disabled"}><span>Uygula</span></label>`;
+      const sw = `<label class="tog" title="Açık: sistem kuralı kendisi uygular. Kapalı: sadece kurala uymayan değişikliğe izin vermez."><input type="checkbox" data-ri="${i}" data-rk="set" ${l.set ? "checked" : ""} ${a ? "" : "disabled"} aria-label="Uygula"></label>`;
       return `<div class="rule">${attrSel}${opSel}${val}${sw}<button class="x" data-a="delrule" data-i="${i}" aria-label="Kuralı sil">×</button></div>`;
     }).join("");
     const hint = f.targets.length ? "" : `<div class="note">Önce oda ya da cihaz seç; özellikler onların türüne göre listelenir.</div>`;
-    return `<div class="field"><label>Kurallar</label><div class="form" style="gap:6px">${lines}</div>${hint}
+    return `<div class="field"><label>Kurallar</label><div class="form" style="gap:6px">${f.lines.length ? `<div class="rule hdr" aria-hidden="true"><span>Uygula</span></div>` : ""}${lines}</div>${hint}
       <button class="link" data-a="addrule" style="margin-top:6px">+ Kural ekle</button>
       <div class="note">Uygula açık: sistem kuralı kendisi uygular (gerekirse ışığı ya da ısıtmayı açar) ve program bitince cihaz varsayılana döner (ışık kapalı, renk beyaz, ısıtma kapalı, perde gündüz açık / gece kapalı). Kapalı: kapalı cihaz kurala uyar sayılır, sadece kurala uymayan değişikliğe izin verilmez; bitince kural kalkar.</div></div>`;
   }
