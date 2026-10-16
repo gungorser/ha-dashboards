@@ -19,6 +19,9 @@
  * have arrived (the card sends {gf: "fed"} after its first full feed); the dock appears when the page
  * reports {gf: "shown"}. No tap highlight anywhere in the card (mobile would flash it on every tap).
  *
+ * Qibla: in the sun mode of the dock the card asks the page for its qibla compass ({gf: "compass", value:
+ * true}; false in the other modes), drawn by the page bottom right.
+ *
  * Wall cut: the cut button of the dock goes on to the next cut the floor has (none -> front -> all; the
  * page's "ready" lists them) and sends it to the page ({gf: "cut", mode}); the page shows that cut's
  * render of every floor (the plain one where a floor has none). The choice is kept in this browser
@@ -84,7 +87,7 @@
  * effect while it is 1. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.19.0";
+const CARD_VERSION = "1.20.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -609,13 +612,18 @@ class GungorsFloorCard extends HTMLElement {
       if (b.dataset.mode === "cut") { this._nextCut(); return; }
       this._mode = b.dataset.mode;
       this._renderList(true);
+      this._compass();
     }));
     clearInterval(this._clockTimer);
     this._clockTimer = setInterval(() => this._feed(), 15000);          // the clock moves on without state changes
     this._clock();
     this._renderList(true);
+    this._compass();
     this._fitDock();
   }
+
+  // the page's qibla compass (bottom right) shows while the sun mode is on
+  _compass() { this._post({ gf: "compass", value: this._mode === "sun" }); }
 
   _fitDock() {
     if (!this._page) return;
