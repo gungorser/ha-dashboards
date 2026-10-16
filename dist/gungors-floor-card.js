@@ -55,6 +55,12 @@
  *             action: toggle
  *           hold_action:
  *             action: more-info
+ *         cop_kutulari:               # popup: a tap opens a window over the screen with any Lovelace card
+ *           entity: sensor.afval_next #   (title optional; the window closes on its x, a tap beside it or Esc)
+ *           tap_action:
+ *             action: popup
+ *             title: Bins
+ *             card: {type: markdown, content: "..."}
  *         mutfak_blind: none          # background: no hover, no tap, the page's default (covers open)
  *         salon_blind:                # background that follows Home Assistant (e.g. a manual blind):
  *           entity: cover.salon_cover #   no hover, no border, no tap, like none, but the page shows the
@@ -77,7 +83,7 @@
  * temperatures. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.17.0";
+const CARD_VERSION = "1.18.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1 };     // page entity types that take a value
@@ -100,6 +106,23 @@ const savedCut = () => { try { return localStorage.getItem(CUT_KEY); } catch (e)
 // position of a page-only cover (entity none + slider), kept per browser
 const LOCAL_KEY = "gungors-floor-card.local.";
 const savedLocal = (k) => { try { const v = localStorage.getItem(LOCAL_KEY + k); return v == null ? null : +v; } catch (e) { return null; } };
+// popup window (action: popup): on document.body, so no transformed or clipping ancestor of the card
+// can trap it; the theme's variables come from the document; z-index under HA's dialogs (8), so a
+// more-info opened from the popup card shows above it
+const POP_CSS = `
+  .pop{position:fixed;inset:0;z-index:7;display:flex;align-items:center;justify-content:center;
+       background:rgba(0,0,0,.55);-webkit-tap-highlight-color:transparent}
+  .box{width:min(520px,calc(100vw - 24px));max-height:calc(100vh - 24px);display:flex;flex-direction:column;
+       background:var(--card-background-color,#1c1c1c);color:var(--primary-text-color,#e1e1e1);
+       border-radius:var(--ha-card-border-radius,12px);box-shadow:0 8px 30px rgba(0,0,0,.6);overflow:hidden}
+  .head{display:flex;align-items:center;gap:8px;padding:10px 8px 6px 16px;font:500 18px Roboto,"Segoe UI",Arial,sans-serif}
+  .head span{flex:1}
+  .head button{width:40px;height:40px;border:0;border-radius:50%;background:none;color:inherit;cursor:pointer;
+               display:flex;align-items:center;justify-content:center}
+  .head button:hover{background:rgba(127,127,127,.2)}
+  .body{overflow-y:auto;padding:0 8px 8px}
+`;
+
 // icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
 const floorIcon = (id) => { const m = /(\d+)/.exec(id); return m && +m[1] <= 3 ? "mdi:home-floor-" + m[1] : "mdi:layers"; };
 
@@ -194,6 +217,11 @@ class GungorsFloorCard extends HTMLElement {
             if (!["sun", "covers"].includes(k) || typeof x !== "number") err(`${f.floor}.rooms.${r}.${k}: sun and covers are numbers`);
         }
       }
+      for (const [id, e] of map) for (const w of ["tap", "hold"]) {
+        const a = e && e[w + "_action"];
+        if (a && a.action === "popup" && (!a.card || typeof a.card !== "object" || !a.card.type))
+          err(`${f.floor}.${id}.${w}_action: a popup needs 'card': a Lovelace card config with a type`);
+      }
       for (const [id, e] of map) if (e && e.gain != null && typeof e.gain !== "number") err(`${f.floor}.${id}: gain must be a number`);
       return { floor: String(f.floor), map, fixed, local, rooms };
     });
@@ -254,6 +282,7 @@ class GungorsFloorCard extends HTMLElement {
     if (!this._root) this._build();
     this._feed();
     this._renderList(false);
+    if (this._pop && this._pop.card) this._pop.card.hass = hass;
   }
 
   connectedCallback() {
@@ -262,7 +291,7 @@ class GungorsFloorCard extends HTMLElement {
 
   _tz() { return (this._hass && this._hass.config && this._hass.config.time_zone) || undefined; }
 
-  disconnectedCallback() { clearInterval(this._clockTimer); this._clockTimer = null; }
+  disconnectedCallback() { clearInterval(this._clockTimer); this._clockTimer = null; this._closePopup(); }
 
   // The card takes the screen below its top (a panel view: below the header); the picture keeps its
   // aspect ratio, grows until it meets the first edge of that area and stays centred in it (landscape
@@ -495,9 +524,45 @@ class GungorsFloorCard extends HTMLElement {
       case "url":
         window.open(act.url_path, "_blank");
         break;
+      case "popup":
+        this._openPopup(act);
+        break;
       default:
         console.warn("gungors-floor-card: unknown action " + act.action);
     }
+  }
+
+  // popup: a window over the screen holding the Lovelace card of the action
+  async _openPopup(act) {
+    this._closePopup();
+    const host = document.createElement("div");
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = `<style>${POP_CSS}</style><div class="pop"><div class="box">
+      <div class="head"><span></span><button title="close"><ha-icon icon="mdi:close"></ha-icon></button></div>
+      <div class="body"></div></div></div>`;
+    root.querySelector(".head span").textContent = act.title || "";
+    const pop = { host, card: null, onKey: (e) => { if (e.key === "Escape") this._closePopup(); } };
+    root.querySelector("button").addEventListener("click", () => this._closePopup());
+    root.querySelector(".pop").addEventListener("click", (e) => { if (e.target === e.currentTarget) this._closePopup(); });
+    window.addEventListener("keydown", pop.onKey);
+    document.body.appendChild(host);
+    this._pop = pop;
+    try {
+      const helpers = await window.loadCardHelpers();
+      if (this._pop !== pop) return;                  // closed while the helpers loaded
+      pop.card = helpers.createCardElement(act.card);
+      pop.card.hass = this._hass;
+      root.querySelector(".body").appendChild(pop.card);
+    } catch (e) {
+      root.querySelector(".body").textContent = "popup card failed: " + e.message;
+    }
+  }
+
+  _closePopup() {
+    if (!this._pop) return;
+    window.removeEventListener("keydown", this._pop.onKey);
+    this._pop.host.remove();
+    this._pop = null;
   }
 
   // slider in the dock -> Home Assistant
