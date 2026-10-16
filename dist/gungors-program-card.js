@@ -22,17 +22,17 @@
 // resume: gungors.pause_program / resume_program, the calendar's `paused` attribute),
 // and a week grid, one row per room with a program that week (an entity target without an
 // area gets its own row), one column per day. Tap an entry to edit it; "Yeni" adds one.
-const VERSION = "1.3.2";
+const VERSION = "1.4.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
   on: { domain: "light", label: "Açık / kapalı", kind: "bool" },
-  brightness: { domain: "light", label: "Parlaklık", kind: "num", unit: "%", min: 0, max: 100, step: 1 },
+  brightness: { domain: "light", label: "Parlaklık", kind: "num", range: true, unit: "%", min: 0, max: 100, step: 1 },
   color: { domain: "light", label: "Renk", kind: "color" },
   color_temp: { domain: "light", label: "Renk sıcaklığı", kind: "num", unit: "K", min: 2000, max: 6500, step: 100 },
   hvac_mode: { domain: "climate", label: "Isıtma modu", kind: "enum", options: [["heat", "Isıtma"], ["off", "Kapalı"]] },
-  temperature: { domain: "climate", label: "Sıcaklık", kind: "num", unit: "°C", min: 5, max: 35, step: 0.5 },
-  position: { domain: "cover", label: "Perde pozisyonu", kind: "num", unit: "%", min: 0, max: 100, step: 5 },
+  temperature: { domain: "climate", label: "Sıcaklık", kind: "num", range: true, unit: "°C", min: 5, max: 35, step: 0.5 },
+  position: { domain: "cover", label: "Perde pozisyonu", kind: "num", range: true, unit: "%", min: 0, max: 100, step: 5 },
 };
 const OPS = [["eq", "eşit"], ["min", "en az"], ["max", "en çok"]];
 const DOMAIN_NAMES = { light: "Işık", climate: "Isıtma", cover: "Perde" };
@@ -238,24 +238,26 @@ function dumpProgram(target, rules) {
     out.push(`${dom}:`);
     for (const k of attrs) {
       const v = rules[k];
-      const text = v && typeof v === "object" && !Array.isArray(v)
-        ? `{${["eq", "min", "max"].filter((o) => o in v).map((o) => `${o}: ${yamlScalarText(v[o])}`).join(", ")}}`
-        : yamlScalarText(v);
+      const obj = v && typeof v === "object" && !Array.isArray(v);
+      const text = obj && (v.set || !("eq" in v) || Object.keys(v).length > 1)
+        ? `{${["eq", "min", "max"].filter((o) => o in v).map((o) => `${o}: ${yamlScalarText(v[o])}`).join(", ")}${v.set ? ", set: true" : ""}}`
+        : yamlScalarText(obj ? v.eq : v);
       out.push(`  ${k}: ${text}`);
     }
   }
   return out.join("\n") + "\n";
 }
-// {attr: value | {eq|min|max}} -> rule lines [{attr, op, value}]
+// {attr: value | {eq|min|max, set}} -> rule lines [{attr, op, value, set}]
 function linesOf(rules) {
   const lines = [];
   for (const [attr, v] of Object.entries(rules || {})) {
     if (v && typeof v === "object" && !Array.isArray(v)) {
-      for (const op of ["eq", "min", "max"]) if (op in v) lines.push({ attr, op, value: v[op] });
-    } else lines.push({ attr, op: "eq", value: v });
+      for (const op of ["eq", "min", "max"]) if (op in v) lines.push({ attr, op, value: v[op], set: !!v.set });
+    } else lines.push({ attr, op: "eq", value: v, set: false });
   }
   return lines;
 }
+const isSet = (v) => !!(v && typeof v === "object" && !Array.isArray(v) && v.set);
 function ruleText(attr, v) {
   const a = ATTRS[attr];
   if (!a) return `${attr}: ${JSON.stringify(v)}`;
@@ -265,11 +267,12 @@ function ruleText(attr, v) {
     if (a.kind === "color") return Array.isArray(x) ? hex(x) : x;
     return `${String(x).replace(".", ",")}${a.unit === "%" ? "%" : a.unit === "K" ? "K" : "°"}`;
   };
+  const mode = isSet(v) ? " (uygula)" : "";
   if (v && typeof v === "object" && !Array.isArray(v)) {
-    if ("eq" in v) return `${a.label} ${val(v.eq)}`;
-    if ("min" in v && "max" in v) return `${a.label} ${val(v.min)}–${val(v.max)}`;
-    if ("min" in v) return `${a.label} ≥ ${val(v.min)}`;
-    return `${a.label} ≤ ${val(v.max)}`;
+    if ("eq" in v) return `${a.label} ${val(v.eq)}${mode}`;
+    if ("min" in v && "max" in v) return `${a.label} ${val(v.min)}–${val(v.max)}${mode}`;
+    if ("min" in v) return `${a.label} ≥ ${val(v.min)}${mode}`;
+    return `${a.label} ≤ ${val(v.max)}${mode}`;
   }
   return `${a.label} ${val(v)}`;
 }
@@ -306,12 +309,13 @@ function ruleValue(attr, v) {
   if ("min" in v && "max" in v) return esc(`${String(v.min).replace(".", ",")}–${n(v.max)}`);
   return esc("min" in v ? `≥ ${n(v.min)}` : `≤ ${n(v.max)}`);
 }
+// Set rules (the system applies them) are filled chips, let rules outlined.
 const ruleChip = (attr, v) =>
-  `<span class="chip" title="${esc(ruleText(attr, v))}"><ha-icon icon="${ruleIcon(attr, v)}"></ha-icon>${ruleValue(attr, v)}</span>`;
+  `<span class="chip ${isSet(v) ? "set" : ""}" title="${esc(ruleText(attr, v))}"><ha-icon icon="${ruleIcon(attr, v)}"></ha-icon>${ruleValue(attr, v)}</span>`;
 const ruleMini = (attr, v) => {
   const eq = eqOf(v);
   if (attr === "color" && (Array.isArray(eq) || COLOR_NAMES[eq])) return ruleValue(attr, v);
-  return `<ha-icon icon="${ruleIcon(attr, v)}"></ha-icon>`;
+  return `<ha-icon class="${isSet(v) ? "set" : ""}" icon="${ruleIcon(attr, v)}"></ha-icon>`;
 };
 
 const CSS = `
@@ -326,7 +330,9 @@ ha-card{padding:16px;color:var(--primary-text-color)}
 .sum{font-weight:500}
 .sub{font-size:.85rem;color:var(--secondary-text-color)}
 .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
-.chip{display:inline-flex;align-items:center;gap:4px;font-size:.8rem;padding:2px 9px 2px 6px;border-radius:12px;background:var(--secondary-background-color);border:1px solid var(--divider-color)}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:.8rem;padding:2px 9px 2px 6px;border-radius:12px;background:transparent;border:1px solid var(--divider-color)}
+.chip.set{background:var(--primary-color);border-color:var(--primary-color);color:var(--text-primary-color,#fff)}
+.ev .mini ha-icon.set{color:var(--primary-color)}
 .chip ha-icon{--mdc-icon-size:16px;display:inline-flex}
 .sw{display:inline-block;width:11px;height:11px;border-radius:50%;border:1px solid var(--divider-color)}
 .ev .mini{display:flex;flex-wrap:wrap;align-items:center;gap:3px;margin-top:2px}
@@ -374,7 +380,10 @@ textarea{min-height:140px;font-family:var(--code-font-family,monospace);font-siz
 .day,.tg{padding:6px 10px;border-radius:6px;border:1px solid var(--divider-color);background:none;color:inherit;font:inherit;cursor:pointer}
 .day{min-width:44px}
 .day.on,.tg.on{background:var(--primary-color);border-color:var(--primary-color);color:var(--text-primary-color,#fff)}
-.rule{display:grid;grid-template-columns:1.4fr 1fr 1.2fr auto;gap:6px;align-items:center}
+.rule{display:grid;grid-template-columns:1.4fr 1fr 1.2fr auto auto;gap:6px;align-items:center}
+.tog{display:inline-flex;align-items:center;gap:4px;font-size:.8rem;white-space:nowrap;cursor:pointer}
+.tog input{width:auto;min-height:0;margin:0;accent-color:var(--primary-color)}
+@container (max-width: 520px){.rule{grid-template-columns:1fr 1fr auto}.rule .tog{grid-column:1 / 3}}
 .x{background:none;border:0;color:var(--secondary-text-color);cursor:pointer;font-size:1.2rem;padding:4px 8px}
 .link{background:none;border:0;padding:0;color:var(--primary-color);font:inherit;font-size:.875rem;cursor:pointer;align-self:flex-start}
 .actions{display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;margin-top:4px}
@@ -558,11 +567,16 @@ class GungorsProgramCard extends HTMLElement {
       if (a.kind === "num") v = num(v);
       if (a.kind === "bool") v = v === true || v === "true";
       if (a.kind === "color") v = Array.isArray(v) ? v : COLOR_NAMES[v] || rgbOf(/^#[0-9a-f]{6}$/i.test(v) ? v : "#ffffff");
-      if (l.op === "eq") rules[l.attr] = v;
+      if (l.op === "eq" && !l.set) rules[l.attr] = v;
       else {
         const cur = rules[l.attr];
         rules[l.attr] = { ...(cur && typeof cur === "object" && !Array.isArray(cur) ? cur : {}), [l.op]: v };
       }
+    }
+    // One flag per attribute: set when any of its lines is.
+    for (const l of lines) {
+      if (l.attr && l.set && rules[l.attr] && typeof rules[l.attr] === "object" && !Array.isArray(rules[l.attr]))
+        rules[l.attr].set = true;
     }
     return rules;
   }
@@ -587,6 +601,7 @@ class GungorsProgramCard extends HTMLElement {
       if (!l.attr) return "Her kuralda bir özellik seç.";
       const a = ATTRS[l.attr];
       if (a.kind === "num" && num(l.value) === null) return `${a.label}: bir değer gir.`;
+      if (l.op !== "eq" && !a.range) return `${a.label}: yalnızca eşit verilebilir.`;
       (seen[l.attr] = seen[l.attr] || []).push(l.op);
     }
     for (const [attr, ops] of Object.entries(seen)) {
@@ -723,7 +738,7 @@ class GungorsProgramCard extends HTMLElement {
       f.targets = f.targets.includes(t) ? f.targets.filter((x) => x !== t) : [...f.targets, t];
       this._render();
     } else if (a === "addrule") {
-      f.lines.push({ attr: "", op: "eq", value: "" });
+      f.lines.push({ attr: "", op: "eq", value: "", set: false });
       this._render();
     } else if (a === "delrule") {
       f.lines.splice(+el.dataset.i, 1);
@@ -756,6 +771,12 @@ class GungorsProgramCard extends HTMLElement {
     if ("ri" in el.dataset) {
       const line = f.lines[+el.dataset.ri];
       const k = el.dataset.rk;
+      if (k === "set") {
+        // One flag per attribute: its other lines (min and max) follow.
+        for (const l of f.lines) if (l.attr === line.attr) l.set = el.checked;
+        if (e.type === "change") this._render();
+        return;
+      }
       line[k] = el.value;
       if (k === "attr") {
         const a = ATTRS[line.attr];
@@ -880,7 +901,7 @@ class GungorsProgramCard extends HTMLElement {
       const attrs = Object.entries(ATTRS).filter(([k, a]) => domains.has(a.domain) || k === l.attr);
       const a = ATTRS[l.attr];
       const attrSel = `<select data-ri="${i}" data-rk="attr" aria-label="Özellik"><option value="" ${l.attr ? "" : "selected"} disabled>Özellik seç</option>${attrs.map(([k, x]) => `<option value="${k}" ${k === l.attr ? "selected" : ""}>${esc(DOMAIN_NAMES[x.domain])}: ${esc(x.label)}</option>`).join("")}</select>`;
-      const ops = a && a.kind === "num" ? OPS : [["eq", "eşit"]];
+      const ops = a && a.range ? OPS : [["eq", "eşit"]];
       const opSel = `<select data-ri="${i}" data-rk="op" aria-label="İşlem" ${a ? "" : "disabled"}>${ops.map(([k, x]) => `<option value="${k}" ${k === l.op ? "selected" : ""}>${x}</option>`).join("")}</select>`;
       let val = `<span></span>`;
       if (a?.kind === "num") val = `<input type="number" data-ri="${i}" data-rk="value" min="${a.min}" max="${a.max}" step="${a.step}" value="${esc(l.value)}" placeholder="${esc(a.unit)}" aria-label="Değer">`;
@@ -890,12 +911,13 @@ class GungorsProgramCard extends HTMLElement {
         const v = Array.isArray(l.value) ? hex(l.value) : COLOR_NAMES[l.value] ? hex(COLOR_NAMES[l.value]) : (l.value || "#ff0000");
         val = `<input type="color" data-ri="${i}" data-rk="value" value="${esc(v)}" aria-label="Renk">`;
       }
-      return `<div class="rule">${attrSel}${opSel}${val}<button class="x" data-a="delrule" data-i="${i}" aria-label="Kuralı sil">×</button></div>`;
+      const sw = `<label class="tog" title="Açık: sistem kuralı kendisi uygular. Kapalı: sadece kurala uymayan değişikliğe izin vermez."><input type="checkbox" data-ri="${i}" data-rk="set" ${l.set ? "checked" : ""} ${a ? "" : "disabled"}><span>Uygula</span></label>`;
+      return `<div class="rule">${attrSel}${opSel}${val}${sw}<button class="x" data-a="delrule" data-i="${i}" aria-label="Kuralı sil">×</button></div>`;
     }).join("");
     const hint = f.targets.length ? "" : `<div class="note">Önce oda ya da cihaz seç; özellikler onların türüne göre listelenir.</div>`;
     return `<div class="field"><label>Kurallar</label><div class="form" style="gap:6px">${lines}</div>${hint}
       <button class="link" data-a="addrule" style="margin-top:6px">+ Kural ekle</button>
-      <div class="note">Eşit kurallar program başlarken uygulanır ve bitince varsayılana döner (ışık kapalı, renk beyaz, ısıtma kapalı, perde gündüz açık / gece kapalı). En az / en çok yalnızca sınır koyar.</div></div>`;
+      <div class="note">Uygula açık: sistem kuralı kendisi uygular (gerekirse ışığı ya da ısıtmayı açar) ve program bitince cihaz varsayılana döner (ışık kapalı, renk beyaz, ısıtma kapalı, perde gündüz açık / gece kapalı). Kapalı: kapalı cihaz kurala uyar sayılır, sadece kurala uymayan değişikliğe izin verilmez; bitince kural kalkar.</div></div>`;
   }
 
   _formHtml() {
