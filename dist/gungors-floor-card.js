@@ -98,10 +98,11 @@
  * which draws its borders grey. A climate gets its hvac mode, hvac_action, current_temperature and
  * temperature (target), "-" where missing; the page paints the radiator by its state and writes the
  * temperatures. A valve (valve.*) gets 1 while open or opening, else 0; the page shows the watering
- * effect while it is 1. Page entities of other types map to that domain; they take no input, the page only
+ * effect while it is 1. A cover also gets {gf: "move", id, value}: "opening" / "closing" while its state
+ * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.21.2";
+const CARD_VERSION = "1.22.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -478,6 +479,10 @@ class GungorsFloorCard extends HTMLElement {
       if (!INPUTS[this._page.entities.get(id)]) continue;   // other types take no input
       const v = this._value(id, e);
       if (v != null) send(id, { gf: "set", id, value: v });
+      if (this._page.entities.get(id) === "cover") {      // moving: the page draws arrows on it
+        const st = this._hass.states[e.entity].state;
+        send("move:" + id, { gf: "move", id, value: st === "opening" || st === "closing" ? st : null });
+      }
     }
     for (const [id, e] of this._local) {                // page-only covers: their position from this browser
       if (e.color) send("color:" + id, { gf: "color", id, value: e.color });
