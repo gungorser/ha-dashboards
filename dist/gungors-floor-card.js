@@ -25,7 +25,8 @@
  * to the next room (after the last, back to the first; a floor switch starts at the first). The screen shows
  * the room's name, current and target temperature, hvac mode and action, and humidity (the entity's
  * `humidity` sensor, else its current_humidity attribute); a tap / hold on the screen runs the room's
- * tap_action / hold_action, hovering it highlights the room on the page. The card asks the page for a link
+ * tap_action / hold_action; hovered, it glows in the room's border colour together with the room
+ * and its link on the page. The card asks the page for a link
  * line from the screen to the room's radiator ({gf: "link", id, rect: the screen in page px}; {gf: "link",
  * id: null} in the other modes), drawn along the world axes and glowing only while hovered.
  *
@@ -100,7 +101,7 @@
  * effect while it is 1. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.21.0";
+const CARD_VERSION = "1.21.1";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -142,6 +143,8 @@ const POP_CSS = `
 // icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
 const floorIcon = (id) => { const m = /(\d+)/.exec(id); return m && +m[1] <= 3 ? "mdi:home-floor-" + m[1] : "mdi:layers"; };
 
+// border colour of a climate on the page (docs/page.md), unless YAML colours it
+const CLIMATE_COLOR = "#e62823";
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
 const CSS = `
@@ -172,7 +175,7 @@ const CSS = `
           border-radius:16px;border:2px solid #5fb4ff;background:linear-gradient(#051a40,#0a2c63);
           box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 10px rgba(80,170,255,.4);display:flex;flex-direction:column}
   .screen.act{cursor:pointer;transition:box-shadow .15s,border-color .15s}
-  .screen.act:hover{border-color:#a8dcff;box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 16px rgba(120,200,255,.8)}
+  .screen.act:hover{border-color:var(--hc);box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 6px var(--hc),0 0 22px var(--hc)}
   .top{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid rgba(95,180,255,.35);padding-bottom:3px}
   .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
   .date{font-size:12px;color:#9fcfff}
@@ -729,6 +732,8 @@ class GungorsFloorCard extends HTMLElement {
     d.querySelectorAll(".btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
     d.querySelector(".screen").classList.toggle("act", !!room);
     d.querySelector(".screen").title = room ? room.e.entity : "";
+    // hovered, the screen glows in the room's border colour, together with the room and its link on the page
+    if (room) d.querySelector(".screen").style.setProperty("--hc", room.e.color || (this._config.colors || {}).climate || CLIMATE_COLOR);
     d.querySelector(".title").textContent = title;
     list.innerHTML = rows.map((r) => `<div class="row${r.on ? " on" : ""}">
         <ha-icon icon="${r.icon}"></ha-icon><span class="lbl">${r.label}</span><span class="val">${r.value}</span></div>`).join("");
