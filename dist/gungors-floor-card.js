@@ -4,7 +4,7 @@
  * deployed to /config/www/gungors_floor/ by deploy.ps1; the card opens index.html?floor=<floor>).
  *
  * The floor page draws; this card only connects it to Home Assistant. The page runs in an iframe and
- * has typed entities (light: RGBA, cover: 0-100, climate: "mode action current target") plus a time
+ * has typed entities (light: RGBA, cover: 0-100, climate: "mode action current target", valve: 0/1) plus a time
  * and a sun input. The card feeds them from Home Assistant (time: the clock in Home Assistant's time zone, sun: sun.sun) and turns the page's
  * taps/holds into the actions set here in YAML. Nothing happens by default: an entity without
  * tap_action / hold_action does nothing on tap / hold.
@@ -80,13 +80,14 @@
  * entity) stop the card. A Home Assistant entity that is unavailable or unknown is reported to the page,
  * which draws its borders grey. A climate gets its hvac mode, hvac_action, current_temperature and
  * temperature (target), "-" where missing; the page paints the radiator by its state and writes the
- * temperatures. Page entities of other types map to that domain; they take no input, the page only
+ * temperatures. A valve (valve.*) gets 1 while open or opening, else 0; the page shows the watering
+ * effect while it is 1. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.18.0";
+const CARD_VERSION = "1.19.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
-const INPUTS = { light: 1, cover: 1, climate: 1 };     // page entity types that take a value
+const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
 const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
 
 // dock buttons: display modes of the screen, and the floor button (goes to the next floor)
@@ -385,6 +386,8 @@ class GungorsFloorCard extends HTMLElement {
         else if (type === "light" && !(Array.isArray(v) && v.length === 4 && v.every(Number.isFinite)
                                        && v.slice(0, 3).every((x) => x >= 0 && x <= 255) && v[3] >= 0 && v[3] <= 1))
           out.push(`${id}: value of a light is [r, g, b, intensity 0-1], not ${JSON.stringify(v)}`);
+        else if (type === "valve" && v !== 0 && v !== 1)
+          out.push(`${id}: value of a valve is 0 (closed) or 1 (open), not ${JSON.stringify(v)}`);
         else if (type === "climate" && !(typeof v === "string" && v.trim().split(/\s+/).length === 4))
           out.push(`${id}: value of a climate is "mode action current target" ("-" where unknown), not ${JSON.stringify(v)}`);
         else if (!INPUTS[type]) out.push(`${id}: a ${type} entity takes no value`);
@@ -488,6 +491,7 @@ class GungorsFloorCard extends HTMLElement {
       const a = st.attributes, n = (x) => (x == null || !Number.isFinite(Number(x)) ? "-" : Number(x));
       return [st.state || "-", a.hvac_action || "-", n(a.current_temperature), n(a.temperature)].join(" ");
     }
+    if (type === "valve") return st.state === "open" || st.state === "opening" ? 1 : 0;
     const pos = st.attributes.current_position;
     return pos != null ? pos : st.state === "closed" ? 0 : 100;
   }
