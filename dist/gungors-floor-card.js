@@ -101,7 +101,7 @@
  * effect while it is 1. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.21.1";
+const CARD_VERSION = "1.21.2";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -378,6 +378,7 @@ class GungorsFloorCard extends HTMLElement {
       if (d.cut == null && this._cut !== "none") this._post({ gf: "cut", mode: this._cut });   // an older page
       this._sent = {};
       this._fed = false;
+      this._linkSent = null;                  // a reloaded page has no link: send it again
       this._wrap.style.aspectRatio = d.W + " / " + d.H;
       this._ratio = d.W / d.H;
       this._fit();
