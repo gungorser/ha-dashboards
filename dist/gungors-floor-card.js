@@ -19,6 +19,16 @@
  * have arrived (the card sends {gf: "fed"} after its first full feed); the dock appears when the page
  * reports {gf: "shown"}. No tap highlight anywhere in the card (mobile would flash it on every tap).
  *
+ * Dock: a quarter disc bottom left with the buttons heating, sun, floor and wall cut over a screen (clock,
+ * date and the mode's rows). Heating: the climates of the floor shown (page type climate, in the order of
+ * `entities`), one room at a time; each press of the heating button (while the heating mode is on) goes on
+ * to the next room (after the last, back to the first; a floor switch starts at the first). The screen shows
+ * the room's name, current and target temperature, hvac mode and action, and humidity (the entity's
+ * `humidity` sensor, else its current_humidity attribute); a tap / hold on the screen runs the room's
+ * tap_action / hold_action, hovering it highlights the room on the page. The card asks the page for a link
+ * line from the screen to the room's radiator ({gf: "link", id, rect: the screen in page px}; {gf: "link",
+ * id: null} in the other modes), drawn along the world axes and glowing only while hovered.
+ *
  * Qibla: in the sun mode of the dock the card asks the page for its qibla compass ({gf: "compass", value:
  * true}; false in the other modes), drawn by the page bottom right.
  *
@@ -50,8 +60,7 @@
  *       entities:                     # page entity -> Home Assistant entity (same domain as its type)
  *         salon_light:
  *           entity: light.salon_light
- *           name: Salon               # optional: label in the dock
- *           slider: true              # optional: a slider in the dock list
+ *           name: Salon               # optional: name in the dock (heating: the room's name)
  *           gain: 2                   # optional (lights): brightness at full intensity, times the render's
  *           color: "#ff9800"          # optional: border colour of this entity on the page
  *           tap_action:
@@ -71,10 +80,14 @@
  *         garaj_door:                 # background with a fixed value instead of the page's default:
  *           entity: none              #   cover: position 0-100 (0 closed, 100 open)
  *           value: 0                  #   light: [r, g, b, intensity 0-1], e.g. [255, 255, 255, 0] = off
- *         dolap_kapi:                 # page-only cover (no Home Assistant entity): a slider in the dock,
- *           entity: none              #   a tap opens/closes it; its position is kept in this browser
+ *         bebek_climate:              # a climate: a room of the heating mode
+ *           entity: climate.bebek_thermostat
+ *           name: Bebek
+ *           humidity: sensor.bebek_sensor_humidity   # optional: the room's humidity in the dock
+ *           tap_action: {action: more-info}
+ *         dolap_kapi:                 # page-only cover (no Home Assistant entity, slider: true): a tap opens /
+ *           entity: none              #   closes it; its position is kept in this browser
  *           slider: true              #   (value: the first position, 0 closed by default)
- *           name: Dolap
  *     - floor: kat1
  *       entities: ...
  *
@@ -87,7 +100,7 @@
  * effect while it is 1. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.20.0";
+const CARD_VERSION = "1.21.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -95,8 +108,7 @@ const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
 
 // dock buttons: display modes of the screen, and the floor button (goes to the next floor)
 const DOCK_MODES = [
-  { id: "lights", icon: "mdi:lightbulb-group", title: "lights" },
-  { id: "covers", icon: "mdi:curtains", title: "covers" },
+  { id: "heating", icon: "mdi:radiator", title: "heating" },
   { id: "sun", icon: "mdi:weather-sunny", title: "sun" },
   { id: "floor", title: "next floor" },
   { id: "cut", title: "wall cut" },
@@ -107,7 +119,7 @@ const CUT_ICON = { none: "mdi:wall", front: "mdi:box-cutter", all: "mdi:floor-pl
 const CUT_TITLE = { none: "walls: no cut", front: "walls: front cut", all: "walls: all cut" };
 const CUT_KEY = "gungors-floor-card.cut";
 const savedCut = () => { try { return localStorage.getItem(CUT_KEY); } catch (e) { return null; } };
-// position of a page-only cover (entity none + slider), kept per browser
+// position of a page-only cover (entity none + slider: true), kept per browser
 const LOCAL_KEY = "gungors-floor-card.local.";
 const savedLocal = (k) => { try { const v = localStorage.getItem(LOCAL_KEY + k); return v == null ? null : +v; } catch (e) { return null; } };
 // popup window (action: popup): on document.body, so no transformed or clipping ancestor of the card
@@ -130,6 +142,8 @@ const POP_CSS = `
 // icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
 const floorIcon = (id) => { const m = /(\d+)/.exec(id); return m && +m[1] <= 3 ? "mdi:home-floor-" + m[1] : "mdi:layers"; };
 
+// the dock's screen: left / bottom offset and size in page px
+const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
 const CSS = `
   ha-card{overflow:hidden;background:#3a3a3a;-webkit-tap-highlight-color:transparent;
           display:flex;align-items:center;justify-content:center}
@@ -154,9 +168,11 @@ const CSS = `
   .btn:hover{transform:scale(1.08)}
   .btn.active{border-color:#ffd66b;box-shadow:0 4px 10px rgba(0,0,0,.55),0 0 20px rgba(255,214,107,.85)}
   .btn.single{opacity:.5;cursor:default}
-  .screen{position:absolute;left:14px;bottom:14px;width:206px;height:182px;box-sizing:border-box;padding:8px 10px;pointer-events:auto;
+  .screen{position:absolute;left:${SCREEN.x}px;bottom:${SCREEN.y}px;width:${SCREEN.w}px;height:${SCREEN.h}px;box-sizing:border-box;padding:8px 10px;pointer-events:auto;
           border-radius:16px;border:2px solid #5fb4ff;background:linear-gradient(#051a40,#0a2c63);
           box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 10px rgba(80,170,255,.4);display:flex;flex-direction:column}
+  .screen.act{cursor:pointer;transition:box-shadow .15s,border-color .15s}
+  .screen.act:hover{border-color:#a8dcff;box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 16px rgba(120,200,255,.8)}
   .top{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid rgba(95,180,255,.35);padding-bottom:3px}
   .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
   .date{font-size:12px;color:#9fcfff}
@@ -196,7 +212,7 @@ class GungorsFloorCard extends HTMLElement {
       const map = new Map(), fixed = new Map(), local = new Map();
       for (const [id, e] of Object.entries(ents)) {
         if (e === "none") { map.set(id, null); continue; }
-        if (e && typeof e === "object" && e.entity === "none" && e.slider === true) {   // page-only, driven from the dock
+        if (e && typeof e === "object" && e.entity === "none" && e.slider === true) {   // page-only, opened / closed by a tap
           if (e.color != null && !isColor(e.color)) err(`${f.floor}.${id}: color must be "#rrggbb"`);
           local.set(id, e);
           continue;
@@ -270,7 +286,7 @@ class GungorsFloorCard extends HTMLElement {
     if (this._floors.length < 2 || !this._page) return;
     this._fi = (this._fi + 1) % this._floors.length;
     this._useFloor();
-    this._drag = null;
+    this._room = 0;
     this._listSig = null;
     this._page = null;                        // until the page's "ready" for the new floor
     this._sent = {};
@@ -399,6 +415,8 @@ class GungorsFloorCard extends HTMLElement {
       const domain = e.entity.split(".")[0];
       if (domainOf(type) !== domain) out.push(`${id}: a ${type} entity, ${e.entity} is a ${domain}`);
       else if (!hass.states[e.entity]) out.push(`${id}: ${e.entity} is not in Home Assistant (set it to none)`);
+      if (e.humidity != null && (type !== "climate" || typeof e.humidity !== "string" || !hass.states[e.humidity]))
+        out.push(`${id}: humidity is a sensor in Home Assistant, for a climate only (${e.humidity})`);
     }
     for (const [id, e] of this._local) {
       const type = page.entities.get(id);
@@ -453,14 +471,14 @@ class GungorsFloorCard extends HTMLElement {
         const state = this._hass.states[e.entity].state;
         send("available:" + id, { gf: "available", id, value: state !== "unavailable" && state !== "unknown" });
       }
-      if (this._drag === id || !INPUTS[this._page.entities.get(id)]) continue;   // dragged slider drives the picture; other types take no input
+      if (!INPUTS[this._page.entities.get(id)]) continue;   // other types take no input
       const v = this._value(id, e);
       if (v != null) send(id, { gf: "set", id, value: v });
     }
     for (const [id, e] of this._local) {                // page-only covers: their position from this browser
       if (e.color) send("color:" + id, { gf: "color", id, value: e.color });
       send("available:" + id, { gf: "available", id, value: true });
-      if (this._drag !== id) send(id, { gf: "set", id, value: this._localValue(id) });
+      send(id, { gf: "set", id, value: this._localValue(id) });
     }
     if (!this._fed) { this._fed = true; this._post({ gf: "fed" }); }   // first inputs are in: the page may show itself
     this._clock();
@@ -572,33 +590,17 @@ class GungorsFloorCard extends HTMLElement {
     this._pop = null;
   }
 
-  // slider in the dock -> Home Assistant
-  _command(id, pct) {
-    if (this._local.has(id)) { this._drag = null; this._setLocal(id, pct); return; }
-    const e = this._map.get(id), st = this._hass.states[e.entity];
-    if (this._page.entities.get(id) === "cover") {
-      if (st.attributes.supported_features & 4) this._hass.callService("cover", "set_cover_position", { entity_id: e.entity, position: pct });
-      else this._hass.callService("cover", pct > 50 ? "open_cover" : "close_cover", { entity_id: e.entity });
-    } else if (pct <= 0) {
-      this._hass.callService("light", "turn_off", { entity_id: e.entity });
-    } else {
-      const modes = st.attributes.supported_color_modes || [];
-      const data = { entity_id: e.entity };
-      if (!(modes.length === 1 && modes[0] === "onoff")) data.brightness_pct = pct;
-      this._hass.callService("light", "turn_on", data);
-    }
-  }
-
   // ------------------------------------------------------------------ dock (quarter-disc control panel, bottom left)
   _buildDock() {
     const R = this._config.dock_radius, d = this._dock, H = this._page.H;
-    if (!DOCK_MODES.some((m) => m.id === this._mode && m.icon)) this._mode = "lights";
-    const rb = R - 46, angles = [8, 27, 47, 65, 82];
+    if (!DOCK_MODES.some((m) => m.id === this._mode && m.icon)) this._mode = "heating";
+    const rb = R - 46, angles = [10, 34, 58, 82];
     const btns = DOCK_MODES.map((m, i) => {
       const a = angles[i] * Math.PI / 180, isFloor = m.id === "floor", isCut = m.id === "cut";
-      const single = isFloor ? this._floors.length < 2 : isCut && this._page.cuts.length < 2;
+      const single = isFloor ? this._floors.length < 2 : isCut ? this._page.cuts.length < 2 : m.id === "heating" && !this._climates().length;
       const icon = isFloor ? floorIcon(this._floor) : isCut ? CUT_ICON[this._cut] : m.icon;
-      const title = isFloor ? this._floor + (single ? "" : " (next floor)") : isCut ? CUT_TITLE[this._cut] : m.title;
+      const title = isFloor ? this._floor + (single ? "" : " (next floor)") : isCut ? CUT_TITLE[this._cut]
+        : m.id === "heating" ? "heating" + (single ? ": no climates" : " (next room)") : m.title;
       return `<button class="btn${single ? " single" : ""}" data-mode="${m.id}" title="${title}"
                 style="left:${rb * Math.cos(a) - 35}px;top:${R - rb * Math.sin(a) - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
     }).join("");
@@ -610,16 +612,61 @@ class GungorsFloorCard extends HTMLElement {
     d.querySelectorAll(".btn").forEach((b) => b.addEventListener("click", () => {
       if (b.dataset.mode === "floor") { this._nextFloor(); return; }
       if (b.dataset.mode === "cut") { this._nextCut(); return; }
+      if (b.dataset.mode === "heating" && this._mode === "heating") {        // heating again: the next room
+        const n = this._climates().length;
+        if (n < 2) return;
+        this._room = ((this._room || 0) + 1) % n;
+      }
       this._mode = b.dataset.mode;
       this._renderList(true);
       this._compass();
     }));
+    // the screen in the heating mode: the room's tap / hold actions, hover highlights it on the page
+    const scr = d.querySelector(".screen"), room = () => (this._mode === "heating" ? this._climate() : null);
+    let timer = null, held = false;
+    scr.addEventListener("mouseenter", () => { const r = room(); if (r) this._post({ gf: "highlight", id: r.id }); });
+    scr.addEventListener("mouseleave", () => { clearTimeout(timer); this._post({ gf: "highlight", id: null }); });
+    scr.addEventListener("pointerdown", () => {
+      held = false;
+      const r = room();
+      if (r) timer = setTimeout(() => { held = true; this._run(r.id, "hold"); }, HOLD_MS);
+    });
+    scr.addEventListener("pointerup", () => { clearTimeout(timer); const r = room(); if (r && !held) this._run(r.id, "tap"); });
+    scr.addEventListener("contextmenu", (ev) => { if (room()) ev.preventDefault(); });
     clearInterval(this._clockTimer);
     this._clockTimer = setInterval(() => this._feed(), 15000);          // the clock moves on without state changes
     this._clock();
     this._renderList(true);
     this._compass();
     this._fitDock();
+  }
+
+  // rooms of the heating mode: the floor's climates mapped to Home Assistant, in the order of the YAML
+  _climates() {
+    if (!this._page || !this._hass) return [];
+    const out = [];
+    for (const [id, e] of this._map)
+      if (e && e.selectable !== false && this._page.entities.get(id) === "climate" && this._hass.states[e.entity]) out.push({ id, e });
+    return out;
+  }
+
+  // the room the heating mode shows now (null: the floor has no climates)
+  _climate() {
+    const list = this._climates();
+    if (!list.length) return null;
+    if (!(this._room < list.length)) this._room = 0;
+    return list[this._room];
+  }
+
+  // the page's link line from the screen to the room shown (heating mode), else none
+  _link() {
+    const r = this._mode === "heating" ? this._climate() : null, H = this._page.H;
+    const rect = [SCREEN.x, H - SCREEN.y - SCREEN.h, SCREEN.x + SCREEN.w, H - SCREEN.y];
+    const msg = r ? { gf: "link", id: r.id, rect } : { gf: "link", id: null };
+    const key = JSON.stringify(msg);
+    if (key === this._linkSent) return;
+    this._linkSent = key;
+    this._post(msg);
   }
 
   // the page's qibla compass (bottom right) shows while the sun mode is on
@@ -641,28 +688,30 @@ class GungorsFloorCard extends HTMLElement {
     d.querySelector(".date").textContent = date;
   }
 
-  // rows of the active mode; rebuilt when the mode or a listed state changes (not while a slider is dragged)
+  // rows of the active mode; rebuilt when the mode or a listed state changes
   _renderList(force) {
     const d = this._dock, list = d.querySelector(".list");
-    if (!list || !this._hass || !this._page || (!force && this._drag)) return;
+    if (!list || !this._hass || !this._page) return;
     const mode = this._mode, hass = this._hass;
-    let rows = [];
-    if (mode === "lights" || mode === "covers") {
-      const type = mode === "lights" ? "light" : "cover";
-      for (const [id, e] of this._map) {
-        if (!e || e.selectable === false || this._page.entities.get(id) !== type || !hass.states[e.entity]) continue;
-        const st = hass.states[e.entity], v = this._value(id, e);
-        const pct = type === "light" ? Math.round(v[3] * 100) : v, on = pct > 0;
-        const icon = type === "light" ? (on ? "mdi:lightbulb-on" : "mdi:lightbulb-outline") : (on ? "mdi:curtains" : "mdi:curtains-closed");
-        const value = type === "light" ? (st.state !== "on" ? "off" : st.attributes.brightness != null ? pct + "%" : "on") : pct + "%";
-        rows.push({ id, icon, on, label: e.name || id, value, pct, slider: !!e.slider });
+    let rows = [], title = this._floor + " · " + DOCK_MODES.find((m) => m.id === mode).title, room = null;
+    if (mode === "heating") {
+      room = this._climate();
+      const n = this._climates().length;
+      if (!room) rows = [{ icon: "mdi:radiator-off", label: "no climates", value: "" }];
+      else {
+        const { id, e } = room, st = hass.states[e.entity], a = st.attributes;
+        const t = (v) => (v == null || !Number.isFinite(Number(v)) ? "-" : (Math.round(Number(v) * 10) / 10).toFixed(1) + "°");
+        const hs = e.humidity && hass.states[e.humidity];
+        const hum = hs && Number.isFinite(Number(hs.state)) ? Number(hs.state) : a.current_humidity;
+        const on = st.state !== "off" && st.state !== "unavailable" && st.state !== "unknown";
+        const act = a.hvac_action || (on ? "-" : "");
+        title = this._floor + " · " + (e.name || id.replace(/_climate$/, "")) + (n > 1 ? " " + (this._room + 1) + "/" + n : "");
+        rows = [{ icon: "mdi:thermometer", label: "current", value: t(a.current_temperature) },
+                { icon: "mdi:target", label: "target", value: on ? t(a.temperature) : "-" },
+                { icon: act === "heating" ? "mdi:fire" : on ? "mdi:radiator" : "mdi:radiator-off", on: act === "heating",
+                  label: "mode", value: st.state + (act && act !== st.state ? "/" + act : "") },
+                { icon: "mdi:water-percent", label: "humidity", value: hum == null || !Number.isFinite(Number(hum)) ? "-" : Math.round(Number(hum)) + "%" }];
       }
-      if (type === "cover")
-        for (const [id, e] of this._local) {
-          if (this._page.entities.get(id) !== "cover") continue;
-          const pct = this._localValue(id), on = pct > 0;
-          rows.push({ id, icon: on ? "mdi:door-sliding-open" : "mdi:door-sliding", on, label: e.name || id, value: pct + "%", pct, slider: true });
-        }
     } else {
       const s = hass.states[this._config.sun], a = s ? s.attributes : {};
       const t = (v) => (v && hhmm(v, this._tz())) || "-";
@@ -673,39 +722,16 @@ class GungorsFloorCard extends HTMLElement {
               { icon: "mdi:weather-sunset-up", label: "sunrise", value: t(a.next_rising) },
               { icon: this._phase === "gece" ? "mdi:post-lamp" : "mdi:sun-clock", on: true, label: "picture", value: this._phase || "-" }];
     }
-    const sig = this._floor + mode + JSON.stringify(rows.map((r) => [r.label, r.value, r.on]));
+    this._link();
+    const sig = title + JSON.stringify(rows.map((r) => [r.label, r.value, r.on]));
     if (!force && sig === this._listSig) return;
     this._listSig = sig;
     d.querySelectorAll(".btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
-    d.querySelector(".title").textContent = this._floor + " · " + DOCK_MODES.find((m) => m.id === mode).title;
-    list.innerHTML = rows.map((r, i) => `<div class="row${r.on ? " on" : ""}${r.id ? " act" : ""}" data-i="${i}" title="${r.id || ""}">
-        <ha-icon icon="${r.icon}"></ha-icon><span class="lbl">${r.label}</span>
-        ${r.slider ? `<input type="range" min="0" max="100" value="${r.pct}">` : `<span class="val">${r.value}</span>`}</div>`).join("");
-    list.querySelectorAll(".row.act").forEach((el) => {
-      const r = rows[+el.dataset.i];
-      el.addEventListener("mouseenter", () => this._post({ gf: "highlight", id: r.id }));
-      el.addEventListener("mouseleave", () => this._post({ gf: "highlight", id: null }));
-      const inp = el.querySelector("input");
-      if (inp) {
-        inp.addEventListener("input", () => { this._drag = r.id; this._preview(r.id, +inp.value); });
-        inp.addEventListener("change", () => { this._command(r.id, +inp.value); this._drag = null; });
-        return;
-      }
-      let timer = null, held = false;
-      el.addEventListener("pointerdown", () => { held = false; timer = setTimeout(() => { held = true; this._run(r.id, "hold"); }, HOLD_MS); });
-      el.addEventListener("pointerup", () => { clearTimeout(timer); if (!held) this._run(r.id, "tap"); });
-      el.addEventListener("pointerleave", () => clearTimeout(timer));
-      el.addEventListener("contextmenu", (ev) => ev.preventDefault());
-    });
-  }
-
-  // the picture follows a slider while it is dragged
-  _preview(id, pct) {
-    const e = this._map.get(id);
-    let value = pct;
-    if (this._page.entities.get(id) === "light") value = (this._hass.states[e.entity].attributes.rgb_color || [255, 255, 255]).slice(0, 3).concat(pct / 100);
-    this._sent[id] = null;
-    this._post({ gf: "set", id, value });
+    d.querySelector(".screen").classList.toggle("act", !!room);
+    d.querySelector(".screen").title = room ? room.e.entity : "";
+    d.querySelector(".title").textContent = title;
+    list.innerHTML = rows.map((r) => `<div class="row${r.on ? " on" : ""}">
+        <ha-icon icon="${r.icon}"></ha-icon><span class="lbl">${r.label}</span><span class="val">${r.value}</span></div>`).join("");
   }
 }
 
