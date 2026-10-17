@@ -22,7 +22,7 @@
 // resume: gungors.pause_program / resume_program, the calendar's `paused` attribute),
 // and a week grid, one row per room with a program that week (an entity target without an
 // area gets its own row), one column per day. Tap an entry to edit it; "Yeni" adds one.
-const VERSION = "1.4.1";
+const VERSION = "1.5.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -339,6 +339,13 @@ ha-card{padding:16px;color:var(--primary-text-color)}
 .ev .mini ha-icon{--mdc-icon-size:14px;display:inline-flex}
 .chip.warn{color:var(--error-color);border-color:var(--error-color)}
 .nav{display:flex;align-items:center;gap:8px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--divider-color);margin:-4px 0 12px}
+.tab{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;font:inherit;color:var(--secondary-text-color);cursor:pointer}
+.tab.on{color:var(--primary-color);border-bottom-color:var(--primary-color);font-weight:500}
+.drow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:8px;align-items:center;padding:4px 0}
+.dcol{display:flex;gap:6px;align-items:center}
+.dcol input[type=color]{width:48px;height:40px;padding:2px;flex:none}
+.note.ok{color:var(--success-color,#43a047)}
 .wk{overflow-x:auto}
 table{border-collapse:collapse;width:100%;table-layout:fixed}
 th,td{border:1px solid var(--divider-color);padding:4px;vertical-align:top;font-size:.8rem}
@@ -426,7 +433,7 @@ class GungorsProgramCard extends HTMLElement {
     if (first) {
       this._week = this._monday(partsInTz(new Date(), this._tz).date);
       this._load();
-    } else if (changed && !this._form) this._load(); // entries or pauses changed
+    } else if (changed && !this._form && this._tab !== "defaults") this._load(); // entries or pauses changed
   }
   get _paused() { return this._calState?.attributes?.paused || []; }
 
@@ -719,6 +726,9 @@ class GungorsProgramCard extends HTMLElement {
     if (!el || el.disabled) return;
     const a = el.dataset.a;
     const f = this._form;
+    if (a === "tab") { this._tab = el.dataset.t; this._defs = null; this._defsError = null; this._defsSaved = false; this._render(); return; }
+    if (a === "defs-save") { this._saveDefaults(); return; }
+    if (a === "defs-reset") { this._defs = null; this._defsError = null; this._defsSaved = false; this._render(); return; }
     if (a === "new") { this._openForm(this._newForm()); }
     else if (a === "edit") { this._openForm(this._formFromEvent(this._find(el.dataset.k))); }
     else if (a === "end") { this._endNow(this._find(el.dataset.k)); }
@@ -767,6 +777,10 @@ class GungorsProgramCard extends HTMLElement {
 
   _onInput(e) {
     const el = e.target;
+    if ("dk" in el.dataset) {
+      if (this._defaultsInput(el) && e.type === "change") this._render();
+      return;
+    }
     if (!this._form) return;
     const f = this._form;
     if ("ri" in el.dataset) {
@@ -872,7 +886,8 @@ class GungorsProgramCard extends HTMLElement {
     const c = this._config;
     if (!this._week) return `<div class="head"><div class="title">${esc(c.title)}</div></div><div class="empty">Yükleniyor…</div>`;
     const days = [this._week, addDays(this._week, 6)];
-    return `<div class="head"><div class="title">${esc(c.title)}</div><button class="btn primary" data-a="new">Yeni</button></div>
+    if (this._tab === "defaults") return `${this._tabsHtml()}${this._defaultsHtml()}`;
+    return `${this._tabsHtml()}<div class="head"><div class="title">${esc(c.title)}</div><button class="btn primary" data-a="new">Yeni</button></div>
       ${this._error ? `<div class="err">${esc(this._error)} <button class="btn small" data-a="reload">Tekrar dene</button></div>` : ""}
       <div class="sec">Şu an aktif</div>
       ${this._loading ? `<div class="empty">Yükleniyor…</div>` : this._activeHtml()}
@@ -881,6 +896,72 @@ class GungorsProgramCard extends HTMLElement {
         <div class="nav"><button class="btn small" data-a="prev" aria-label="Önceki hafta">‹</button><button class="btn small" data-a="today">Bu hafta</button><button class="btn small" data-a="next" aria-label="Sonraki hafta">›</button></div>
       </div>
       ${this._weekHtml()}`;
+  }
+
+  _tabsHtml() {
+    const t = this._tab || "program";
+    return `<div class="tabs" role="tablist">${[["program", "Program"], ["defaults", "Varsayılanlar"]].map(([k, x]) =>
+      `<button role="tab" class="tab ${k === t ? "on" : ""}" aria-selected="${k === t}" data-a="tab" data-t="${k}">${x}</button>`).join("")}</div>`;
+  }
+
+  // ---------- defaults tab ----------
+  _defaultsDraft() {
+    const cur = this._calState?.attributes?.defaults || {};
+    const d = {};
+    for (const dom of DOMAINS) d[dom] = { ...(cur[dom] || {}) };
+    return d;
+  }
+
+  _defaultsHtml() {
+    const d = this._defs || (this._defs = this._defaultsDraft());
+    const row = (label, ctl) => `<div class="drow"><span>${esc(label)}</span>${ctl}</div>`;
+    const sel = (key, value, options) => `<select data-dk="${key}" aria-label="${esc(key)}">${options.map(([k, x]) =>
+      `<option value="${esc(k)}" ${String(value ?? "") === k ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>`;
+    const numIn = (key, value, a) => `<input type="number" data-dk="${key}" min="${a.min}" max="${a.max}" step="${a.step}" value="${value ?? ""}" placeholder="yok" aria-label="${esc(a.label)}">`;
+    const L = d.light, C = d.climate, V = d.cover;
+    const color = L.color === undefined ? "" : hex(Array.isArray(L.color) ? L.color : COLOR_NAMES[L.color] || [255, 255, 255]);
+    const pos = V.position === undefined ? "" : V.position === "sun" ? "sun" : "value";
+    return `<div class="head"><div class="title">Varsayılanlar</div></div>
+      <div class="note" style="margin:0 0 8px">Uygula açık bir kural bitince cihaz bu değerlere döner; perdeler gün doğumu ve batımında da. Boş bırakılan özellik değişmez. Bir cihaz kendi YAML'ındaki <code>- program: {...}</code> ile bunları ezebilir.</div>
+      ${this._defsError ? `<div class="err">${esc(this._defsError)}</div>` : ""}
+      ${this._defsSaved ? `<div class="note ok">Kaydedildi.</div>` : ""}
+      <div class="sec">Işık</div>
+      ${row("Açık / kapalı", sel("light.on", L.on === undefined ? "" : String(L.on), [["", "değişmez"], ["true", "açık"], ["false", "kapalı"]]))}
+      ${row("Renk", `<span class="dcol">${sel("light.color_on", color ? "1" : "", [["", "değişmez"], ["1", "renk"]])}${color ? `<input type="color" data-dk="light.color" value="${color}" aria-label="Renk">` : ""}</span>`)}
+      ${row("Parlaklık (%)", numIn("light.brightness", L.brightness, ATTRS.brightness))}
+      ${row("Renk sıcaklığı (K)", numIn("light.color_temp", L.color_temp, ATTRS.color_temp))}
+      <div class="sec">Isıtma</div>
+      ${row("Isıtma modu", sel("climate.hvac_mode", C.hvac_mode ?? "", [["", "değişmez"], ["heat", "Isıtma"], ["off", "Kapalı"]]))}
+      ${row("Sıcaklık (°C)", numIn("climate.temperature", C.temperature, ATTRS.temperature))}
+      <div class="sec">Perde</div>
+      ${row("Pozisyon", `<span class="dcol">${sel("cover.position_mode", pos, [["", "değişmez"], ["sun", "güneşe göre"], ["value", "sabit"]])}${pos === "value" ? numIn("cover.position", V.position, ATTRS.position) : ""}</span>`)}
+      <div class="actions" style="margin-top:12px"><button class="btn" data-a="defs-reset">Geri al</button><button class="btn primary" data-a="defs-save" ${this._defsBusy ? "disabled" : ""}>Kaydet</button></div>`;
+  }
+
+  _defaultsInput(el) {
+    const d = this._defs || (this._defs = this._defaultsDraft());
+    const [dom, attr] = el.dataset.dk.split(".");
+    const v = el.value;
+    const set = (a, x) => { if (x === undefined) delete d[dom][a]; else d[dom][a] = x; };
+    if (attr === "on") set("on", v === "" ? undefined : v === "true");
+    else if (attr === "color_on") set("color", v ? [255, 255, 255] : undefined);
+    else if (attr === "color") set("color", rgbOf(v));
+    else if (attr === "hvac_mode") set("hvac_mode", v || undefined);
+    else if (attr === "position_mode") set("position", v === "sun" ? "sun" : v === "value" ? 100 : undefined);
+    else set(attr, v === "" ? undefined : num(v) ?? undefined);
+    this._defsSaved = false;
+    return attr === "on" || attr.endsWith("_on") || attr.endsWith("_mode");
+  }
+
+  async _saveDefaults() {
+    this._defsBusy = true; this._defsError = null; this._render();
+    try {
+      await this._hass.callService("gungors", "set_program_defaults", { defaults: this._defs }, { entity_id: this._config.entity });
+      this._defsSaved = true;
+    } catch (err) {
+      this._defsError = err?.message || String(err);
+    }
+    this._defsBusy = false; this._render();
   }
 
   _targetsHtml(f) {
