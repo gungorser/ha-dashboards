@@ -11,10 +11,13 @@
 // grouped by domain (the older JSON form with one `rules` key is still read):
 //   target: [Salon, light.melike_light]
 //   light:
-//     on: true
-//     brightness: {max: 40}
-// Rule attributes per domain: light on / brightness (%) / color / color_temp (K), climate
-// hvac_mode / temperature, cover position (%). Each rule is a value (eşit) or a min/max.
+//     state: "on"
+//     brightness_pct: {max: 40}
+// Rule attributes per domain, with Home Assistant's names: light state ("on"/"off") /
+// brightness_pct / rgb_color / color_temp_kelvin, climate state (heat/off) / temperature,
+// cover current_position (%). Each rule is a value (=) or a min/max. The older names (on,
+// brightness, color, color_temp, hvac_mode, position) are still read. Inside the card the
+// attributes keep those short keys. Defaults may be templates (the cover one follows the sun).
 // The integration checks every save: an unreadable entry or one that conflicts with an
 // overlapping entry on an entity is refused, and its message is shown in the editor.
 //
@@ -24,18 +27,43 @@
 // that range (an entity target without an area gets its own row). Each occurrence is one bar
 // from its start to its end, also across midnight; overlapping ones stack. Tap a bar to edit
 // it, a day in the week header to open that day; "Yeni" adds an entry.
-const VERSION = "1.6.0";
+const VERSION = "1.7.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
-  on: { domain: "light", label: "Açık / kapalı", kind: "bool" },
-  brightness: { domain: "light", label: "Parlaklık", kind: "num", range: true, unit: "%", min: 0, max: 100, step: 1 },
-  color: { domain: "light", label: "Renk", kind: "color" },
-  color_temp: { domain: "light", label: "Renk sıcaklığı", kind: "num", unit: "K", min: 2000, max: 6500, step: 100 },
-  hvac_mode: { domain: "climate", label: "Isıtma modu", kind: "enum", options: [["heat", "Isıtma"], ["off", "Kapalı"]] },
-  temperature: { domain: "climate", label: "Sıcaklık", kind: "num", range: true, unit: "°C", min: 5, max: 35, step: 0.5 },
-  position: { domain: "cover", label: "Perde pozisyonu", kind: "num", range: true, unit: "%", min: 0, max: 100, step: 5 },
+  on: { domain: "light", name: "state", label: "Açık / kapalı", kind: "bool" },
+  brightness: { domain: "light", name: "brightness_pct", label: "Parlaklık", kind: "num", range: true, unit: "%", min: 0, max: 100, step: 1 },
+  color: { domain: "light", name: "rgb_color", label: "Renk", kind: "color" },
+  color_temp: { domain: "light", name: "color_temp_kelvin", label: "Renk sıcaklığı", kind: "num", unit: "K", min: 2000, max: 6500, step: 100 },
+  hvac_mode: { domain: "climate", name: "state", label: "Isıtma modu", kind: "enum", options: [["heat", "Isıtma"], ["off", "Kapalı"]] },
+  temperature: { domain: "climate", name: "temperature", label: "Sıcaklık", kind: "num", range: true, unit: "°C", min: 5, max: 35, step: 0.5 },
+  position: { domain: "cover", name: "current_position", label: "Perde pozisyonu", kind: "num", range: true, unit: "%", min: 0, max: 100, step: 5 },
 };
+const SUN_TEMPLATE = "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}";
+const isTpl = (v) => typeof v === "string" && (v.includes("{{") || v.includes("{%"));
+// The attribute a name stands for in a domain: Home Assistant's name or the older key.
+function attrOf(domain, key) {
+  if (key === true || key === "true") key = "on"; // YAML 1.1 reads a bare `on:` key as true
+  const hit = Object.entries(ATTRS).find(([, a]) => a.domain === domain && a.name === key);
+  if (hit) return hit[0];
+  return ATTRS[key] && ATTRS[key].domain === domain ? key : null;
+}
+// A value as read: light state "on"/"off" -> true/false, a bare `off` heating mode -> "off".
+function valueIn(attr, v) {
+  const one = (x) => {
+    if (attr === "on" && typeof x === "string" && /^(on|off)$/i.test(x)) return x.toLowerCase() === "on";
+    if (attr === "hvac_mode" && x === false) return "off";
+    return x;
+  };
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    const o = { ...v };
+    if ("eq" in o) o.eq = one(o.eq);
+    return o;
+  }
+  return one(v);
+}
+// A value as written: light state true/false -> "on"/"off".
+const valueOut = (attr, v) => (attr === "on" && typeof v === "boolean" ? (v ? "on" : "off") : v);
 const OPS = [["eq", "="], ["min", "≥"], ["max", "≤"]];
 const DOMAIN_NAMES = { light: "Işık", climate: "Isıtma", cover: "Perde" };
 const WD = [["MO", "Pzt"], ["TU", "Sal"], ["WE", "Çar"], ["TH", "Per"], ["FR", "Cum"], ["SA", "Cmt"], ["SU", "Paz"]];
@@ -206,20 +234,19 @@ function parseProgram(raw) {
   const target = typeof d.target === "string" ? [d.target] : d.target;
   if (!Array.isArray(target) || !target.length) return null;
   const rules = {};
-  const add = (attr, v, domain) => {
-    const a = ATTRS[attr];
-    if (!a || (domain && a.domain !== domain) || attr in rules) return false;
-    rules[attr] = attr === "hvac_mode" && v === false ? "off" : v;
+  const add = (attr, v) => {
+    if (!attr || attr in rules) return false;
+    rules[attr] = valueIn(attr, v);
     return true;
   };
   if (d.rules !== undefined) {
     if (!d.rules || typeof d.rules !== "object") return null;
-    for (const [k, v] of Object.entries(d.rules)) if (!add(k, v)) return null;
+    for (const [k, v] of Object.entries(d.rules)) if (!add(DOMAINS.map((dom) => attrOf(dom, k)).find(Boolean), v)) return null;
   }
   for (const dom of DOMAINS) {
     if (d[dom] === undefined) continue;
     if (!d[dom] || typeof d[dom] !== "object" || Array.isArray(d[dom])) return null;
-    for (const [k, v] of Object.entries(d[dom])) if (!add(k, v, dom)) return null;
+    for (const [k, v] of Object.entries(d[dom])) if (!add(attrOf(dom, k), v)) return null;
   }
   return Object.keys(rules).length ? { target, rules } : null;
 }
@@ -242,9 +269,9 @@ function dumpProgram(target, rules) {
       const v = rules[k];
       const obj = v && typeof v === "object" && !Array.isArray(v);
       const text = obj && (v.set || !("eq" in v) || Object.keys(v).length > 1)
-        ? `{${["eq", "min", "max"].filter((o) => o in v).map((o) => `${o}: ${yamlScalarText(v[o])}`).join(", ")}${v.set ? ", set: true" : ""}}`
-        : yamlScalarText(obj ? v.eq : v);
-      out.push(`  ${k}: ${text}`);
+        ? `{${["eq", "min", "max"].filter((o) => o in v).map((o) => `${o}: ${yamlScalarText(o === "eq" ? valueOut(k, v[o]) : v[o])}`).join(", ")}${v.set ? ", set: true" : ""}}`
+        : yamlScalarText(valueOut(k, obj ? v.eq : v));
+      out.push(`  ${ATTRS[k].name}: ${text}`);
     }
   }
   return out.join("\n") + "\n";
@@ -347,6 +374,9 @@ ha-card{padding:16px;color:var(--primary-text-color)}
 .dcol{display:flex;gap:6px;align-items:center}
 .dcol input[type=color]{width:48px;height:40px;padding:2px;flex:none}
 .note.ok{color:var(--success-color,#43a047)}
+.note code{word-break:break-all}
+.tplrow{padding:0 0 4px}
+input.tpl{font-family:var(--code-font-family,monospace);font-size:.8rem;min-width:0;width:100%}
 .head.wrap{flex-wrap:wrap}
 .seg{display:inline-flex}
 .seg .btn{border-radius:0}
@@ -760,9 +790,9 @@ class GungorsProgramCard extends HTMLElement {
     if (!el || el.disabled) return;
     const a = el.dataset.a;
     const f = this._form;
-    if (a === "tab") { this._tab = el.dataset.t; this._defs = null; this._defsError = null; this._defsSaved = false; this._render(); return; }
+    if (a === "tab") { this._tab = el.dataset.t; this._defs = null; this._defsPosMode = null; this._defsError = null; this._defsSaved = false; this._render(); return; }
     if (a === "defs-save") { this._saveDefaults(); return; }
-    if (a === "defs-reset") { this._defs = null; this._defsError = null; this._defsSaved = false; this._render(); return; }
+    if (a === "defs-reset") { this._defs = null; this._defsPosMode = null; this._defsError = null; this._defsSaved = false; this._render(); return; }
     if (a === "new") { this._openForm(this._newForm()); }
     else if (a === "edit") { this._openForm(this._formFromEvent(this._find(el.dataset.k))); }
     else if (a === "end") { this._endNow(this._find(el.dataset.k)); }
@@ -975,10 +1005,17 @@ class GungorsProgramCard extends HTMLElement {
   }
 
   // ---------- defaults tab ----------
+  // The defaults as the integration shows them (Home Assistant's names) -> {domain: {attr: value}}.
   _defaultsDraft() {
     const cur = this._calState?.attributes?.defaults || {};
     const d = {};
-    for (const dom of DOMAINS) d[dom] = { ...(cur[dom] || {}) };
+    for (const dom of DOMAINS) {
+      d[dom] = {};
+      for (const [k, v] of Object.entries(cur[dom] || {})) {
+        const attr = attrOf(dom, k);
+        if (attr) d[dom][attr] = attr === "position" && v === "sun" ? SUN_TEMPLATE : valueIn(attr, v);
+      }
+    }
     return d;
   }
 
@@ -987,24 +1024,29 @@ class GungorsProgramCard extends HTMLElement {
     const row = (label, ctl) => `<div class="drow"><span>${esc(label)}</span>${ctl}</div>`;
     const sel = (key, value, options) => `<select data-dk="${key}" aria-label="${esc(key)}">${options.map(([k, x]) =>
       `<option value="${esc(k)}" ${String(value ?? "") === k ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>`;
-    const numIn = (key, value, a) => `<input type="number" data-dk="${key}" min="${a.min}" max="${a.max}" step="${a.step}" value="${value ?? ""}" placeholder="yok" aria-label="${esc(a.label)}">`;
+    // a template default (set in YAML or here) is edited as text
+    const tplIn = (key, value, label) => `<input type="text" class="tpl" data-dk="${key}_tpl" value="${esc(value)}" aria-label="${esc(label)} şablonu" spellcheck="false">`;
+    const numIn = (key, value, a) => isTpl(value) ? tplIn(key, value, a.label)
+      : `<input type="number" data-dk="${key}" min="${a.min}" max="${a.max}" step="${a.step}" value="${value ?? ""}" placeholder="yok" aria-label="${esc(a.label)}">`;
     const L = d.light, C = d.climate, V = d.cover;
-    const color = L.color === undefined ? "" : hex(Array.isArray(L.color) ? L.color : COLOR_NAMES[L.color] || [255, 255, 255]);
-    const pos = V.position === undefined ? "" : V.position === "sun" ? "sun" : "value";
+    const color = L.color === undefined || isTpl(L.color) ? "" : hex(Array.isArray(L.color) ? L.color : COLOR_NAMES[L.color] || [255, 255, 255]);
+    const pos = this._defsPosMode || (V.position === undefined ? "" : V.position === SUN_TEMPLATE ? "sun" : isTpl(V.position) ? "tpl" : "value");
     return `<div class="head"><div class="title">Varsayılanlar</div></div>
-      <div class="note" style="margin:0 0 8px">Uygula açık bir kural bitince cihaz bu değerlere döner; perdeler gün doğumu ve batımında da. Boş bırakılan özellik değişmez. Bir cihaz kendi YAML'ındaki <code>- program: {...}</code> ile bunları ezebilir.</div>
+      <div class="note" style="margin:0 0 8px">Uygula açık bir kural bitince cihaz bu değerlere döner. Değer bir Jinja şablonu da olabilir; sonucu değişince yeniden uygulanır (güneşe göre perde: gün doğumunda açılır, batımında kapanır). Boş bırakılan özellik değişmez. Bir cihaz kendi YAML'ındaki <code>- program: {...}</code> ile bunları ezebilir.</div>
       ${this._defsError ? `<div class="err">${esc(this._defsError)}</div>` : ""}
       ${this._defsSaved ? `<div class="note ok">Kaydedildi.</div>` : ""}
       <div class="sec">Işık</div>
-      ${row("Açık / kapalı", sel("light.on", L.on === undefined ? "" : String(L.on), [["", "değişmez"], ["true", "açık"], ["false", "kapalı"]]))}
-      ${row("Renk", `<span class="dcol">${sel("light.color_on", color ? "1" : "", [["", "değişmez"], ["1", "renk"]])}${color ? `<input type="color" data-dk="light.color" value="${color}" aria-label="Renk">` : ""}</span>`)}
+      ${row("Açık / kapalı", isTpl(L.on) ? tplIn("light.on", L.on, "Açık / kapalı") : sel("light.on", L.on === undefined ? "" : String(L.on), [["", "değişmez"], ["true", "açık"], ["false", "kapalı"]]))}
+      ${row("Renk", isTpl(L.color) ? tplIn("light.color", L.color, "Renk") : `<span class="dcol">${sel("light.color_on", color ? "1" : "", [["", "değişmez"], ["1", "renk"]])}${color ? `<input type="color" data-dk="light.color" value="${color}" aria-label="Renk">` : ""}</span>`)}
       ${row("Parlaklık (%)", numIn("light.brightness", L.brightness, ATTRS.brightness))}
       ${row("Renk sıcaklığı (K)", numIn("light.color_temp", L.color_temp, ATTRS.color_temp))}
       <div class="sec">Isıtma</div>
-      ${row("Isıtma modu", sel("climate.hvac_mode", C.hvac_mode ?? "", [["", "değişmez"], ["heat", "Isıtma"], ["off", "Kapalı"]]))}
+      ${row("Isıtma modu", isTpl(C.hvac_mode) ? tplIn("climate.hvac_mode", C.hvac_mode, "Isıtma modu") : sel("climate.hvac_mode", C.hvac_mode ?? "", [["", "değişmez"], ["heat", "Isıtma"], ["off", "Kapalı"]]))}
       ${row("Sıcaklık (°C)", numIn("climate.temperature", C.temperature, ATTRS.temperature))}
       <div class="sec">Perde</div>
-      ${row("Pozisyon", `<span class="dcol">${sel("cover.position_mode", pos, [["", "değişmez"], ["sun", "güneşe göre"], ["value", "sabit"]])}${pos === "value" ? numIn("cover.position", V.position, ATTRS.position) : ""}</span>`)}
+      ${row("Pozisyon", `<span class="dcol">${sel("cover.position_mode", pos, [["", "değişmez"], ["sun", "güneşe göre"], ["value", "sabit"], ["tpl", "şablon"]])}${pos === "value" ? numIn("cover.position", V.position, ATTRS.position) : ""}</span>`)}
+      ${pos === "tpl" ? `<div class="tplrow">${tplIn("cover.position", V.position ?? "", "Pozisyon")}<div class="note">Sonuç 0–100 arası bir sayı olmalı.</div></div>` : ""}
+      ${pos === "sun" ? `<div class="note">Şablon: <code>${esc(SUN_TEMPLATE)}</code></div>` : ""}
       <div class="actions" style="margin-top:12px"><button class="btn" data-a="defs-reset">Geri al</button><button class="btn primary" data-a="defs-save" ${this._defsBusy ? "disabled" : ""}>Kaydet</button></div>`;
   }
 
@@ -1013,11 +1055,16 @@ class GungorsProgramCard extends HTMLElement {
     const [dom, attr] = el.dataset.dk.split(".");
     const v = el.value;
     const set = (a, x) => { if (x === undefined) delete d[dom][a]; else d[dom][a] = x; };
+    if (attr.endsWith("_tpl")) { set(attr.slice(0, -4), v.trim() === "" ? undefined : v); this._defsSaved = false; return false; }
     if (attr === "on") set("on", v === "" ? undefined : v === "true");
     else if (attr === "color_on") set("color", v ? [255, 255, 255] : undefined);
     else if (attr === "color") set("color", rgbOf(v));
     else if (attr === "hvac_mode") set("hvac_mode", v || undefined);
-    else if (attr === "position_mode") set("position", v === "sun" ? "sun" : v === "value" ? 100 : undefined);
+    else if (attr === "position_mode") {
+      const cur = d.cover.position;
+      set("position", v === "sun" ? SUN_TEMPLATE : v === "value" ? 100 : v === "tpl" ? (isTpl(cur) ? cur : SUN_TEMPLATE) : undefined);
+      this._defsPosMode = v; // "şablon" with the sun template stays an editable template
+    }
     else set(attr, v === "" ? undefined : num(v) ?? undefined);
     this._defsSaved = false;
     return attr === "on" || attr.endsWith("_on") || attr.endsWith("_mode");
@@ -1026,7 +1073,10 @@ class GungorsProgramCard extends HTMLElement {
   async _saveDefaults() {
     this._defsBusy = true; this._defsError = null; this._render();
     try {
-      await this._hass.callService("gungors", "set_program_defaults", { defaults: this._defs }, { entity_id: this._config.entity });
+      const defaults = {};
+      for (const [dom, values] of Object.entries(this._defs))
+        defaults[dom] = Object.fromEntries(Object.entries(values).map(([a, v]) => [ATTRS[a].name, isTpl(v) ? v.trim() : valueOut(a, v)]));
+      await this._hass.callService("gungors", "set_program_defaults", { defaults }, { entity_id: this._config.entity });
       this._defsSaved = true;
     } catch (err) {
       this._defsError = err?.message || String(err);
