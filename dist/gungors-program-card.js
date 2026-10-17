@@ -27,7 +27,7 @@
 // that range (an entity target without an area gets its own row). Each occurrence is one bar
 // from its start to its end, also across midnight; overlapping ones stack. Tap a bar to edit
 // it, a day in the week header to open that day; "Yeni" adds an entry.
-const VERSION = "1.7.0";
+const VERSION = "1.8.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -108,6 +108,43 @@ function addDays(date, n) {
 const weekdayIdx = (date) => (new Date(date + "T00:00:00Z").getUTCDay() + 6) % 7; // 0 = Monday
 const fmtDay = (date) => { const [, m, d] = date.split("-"); return `${d}.${m}`; };
 const fmtDate = (date) => { const [y, m, d] = date.split("-"); return `${d}.${m}.${y}`; };
+
+// Sun-relative times ("sunset-30m", "sunrise+2h"): the integration works out the real time
+// of every occurrence; the card only needs a close guess for the editor and the stored time.
+const SUN_RE = /^(sunrise|sunset)\s*(?:([+-])\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?)?$/i;
+const SUN_NAMES = { sunrise: "Gün doğumu", sunset: "Gün batımı" };
+function parseSun(v) {
+  const m = typeof v === "string" ? SUN_RE.exec(v.trim()) : null;
+  if (!m || (m[2] && !m[3] && !m[4])) return null;
+  const off = (+(m[3] || 0)) * 60 + (+(m[4] || 0));
+  return { event: m[1].toLowerCase(), offset: m[2] === "-" ? -off : off };
+}
+function sunText(sun) {
+  const a = Math.abs(sun.offset), h = Math.floor(a / 60), m = a % 60;
+  return sun.offset ? `${sun.event}${sun.offset < 0 ? "-" : "+"}${h ? `${h}h` : ""}${m ? `${m}m` : ""}` : sun.event;
+}
+function sunLabel(sun) {
+  const a = Math.abs(sun.offset), h = Math.floor(a / 60), m = a % 60;
+  const off = sun.offset ? ` ${sun.offset < 0 ? "−" : "+"}${h ? `${h} sa` : ""}${h && m ? " " : ""}${m ? `${m} dk` : ""}` : "";
+  return `${SUN_NAMES[sun.event]}${off}`;
+}
+// Sunrise or sunset on a date (UTC ms; NOAA approximation, a minute or two off), null if none.
+function sunMs(event, date, lat, lon) {
+  const [y, mo, d] = date.split("-").map(Number);
+  const rad = Math.PI / 180;
+  const n = Math.round((Date.UTC(y, mo - 1, d) - Date.UTC(2000, 0, 1, 12)) / 864e5);
+  const jStar = n - lon / 360;
+  const M = (357.5291 + 0.98560028 * jStar) % 360;
+  const C = 1.9148 * Math.sin(M * rad) + 0.02 * Math.sin(2 * M * rad) + 0.0003 * Math.sin(3 * M * rad);
+  const L = (M + C + 180 + 102.9372) % 360;
+  const jTransit = 2451545 + jStar + 0.0053 * Math.sin(M * rad) - 0.0069 * Math.sin(2 * L * rad);
+  const dec = Math.asin(Math.sin(L * rad) * Math.sin(23.4397 * rad));
+  const cosH = (Math.sin(-0.833 * rad) - Math.sin(lat * rad) * Math.sin(dec)) / (Math.cos(lat * rad) * Math.cos(dec));
+  if (cosH < -1 || cosH > 1) return null;
+  const H = Math.acos(cosH) / rad / 360;
+  const j = event === "sunrise" ? jTransit - H : jTransit + H;
+  return (j - 2440587.5) * 864e5;
+}
 
 function parseRrule(r) {
   if (!r) return { mode: "none", days: [], raw: "" };
@@ -230,7 +267,12 @@ function parseProgram(raw) {
   let d;
   try { d = JSON.parse(raw); } catch (e) { try { d = yamlParse(raw); } catch (e2) { return null; } }
   if (!d || typeof d !== "object" || Array.isArray(d)) return null;
-  if (Object.keys(d).some((k) => k !== "target" && k !== "rules" && !DOMAINS.includes(k))) return null;
+  if (Object.keys(d).some((k) => !["target", "start", "end", "rules"].includes(k) && !DOMAINS.includes(k))) return null;
+  const sun = {};
+  for (const k of ["start", "end"]) {
+    if (d[k] === undefined || d[k] === null) continue;
+    if (!(sun[k] = parseSun(d[k]))) return null;
+  }
   const target = typeof d.target === "string" ? [d.target] : d.target;
   if (!Array.isArray(target) || !target.length) return null;
   const rules = {};
@@ -248,7 +290,7 @@ function parseProgram(raw) {
     if (!d[dom] || typeof d[dom] !== "object" || Array.isArray(d[dom])) return null;
     for (const [k, v] of Object.entries(d[dom])) if (!add(attrOf(dom, k), v)) return null;
   }
-  return Object.keys(rules).length ? { target, rules } : null;
+  return Object.keys(rules).length ? { target, rules, ...sun } : null;
 }
 // The description text of a program: YAML, rules grouped by domain (as the integration writes it).
 function yamlScalarText(v) {
@@ -259,8 +301,9 @@ function yamlScalarText(v) {
   if (/^[^\s\-?:,[\]{}#&*!|>'"%@`][^:#,[\]{}]*$/.test(t) && !/^(y|n|yes|no|true|false|on|off|null|~|[-+.]?\d.*|\.(inf|nan))$/i.test(t) && t === t.trim()) return t;
   return JSON.stringify(t);
 }
-function dumpProgram(target, rules) {
+function dumpProgram(target, rules, sun = {}) {
   const out = [`target: ${yamlScalarText(target)}`];
+  for (const k of ["start", "end"]) if (sun[k]) out.push(`${k}: ${sunText(sun[k])}`);
   for (const dom of DOMAINS) {
     const attrs = Object.keys(rules).filter((k) => ATTRS[k] && ATTRS[k].domain === dom);
     if (!attrs.length) continue;
@@ -430,6 +473,7 @@ input.tpl{font-family:var(--code-font-family,monospace);font-size:.8rem;min-widt
 .form{display:flex;flex-direction:column;gap:12px}
 .field label,.lbl{display:block;font-size:.8rem;color:var(--secondary-text-color);margin-bottom:4px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.sunrow{display:flex;gap:6px}.sunrow>*{min-width:0;flex:1}.sunrow>input[type=number]{flex:0 0 72px}
 input[type=text],input[type=number],input[type=date],input[type=time],select,textarea{box-sizing:border-box;width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color);font:inherit;min-height:40px}
 input[type=color]{width:56px;height:40px;padding:2px;border-radius:6px;border:1px solid var(--divider-color);background:none}
 textarea{min-height:140px;font-family:var(--code-font-family,monospace);font-size:.85rem}
@@ -599,6 +643,7 @@ class GungorsProgramCard extends HTMLElement {
     return {
       orig: null, summary: "", allDay: false,
       sDate: p.date, sTime: `${pad(h)}:00`, eDate: eh === 0 ? addDays(p.date, 1) : p.date, eTime: `${pad(eh)}:00`,
+      sMode: "time", sOff: "0", eMode: "time", eOff: "0",
       mode: "none", days: [], rawRrule: "",
       targets: [], lines: [], rawMode: false, rawBad: false, rawDesc: "",
     };
@@ -623,6 +668,8 @@ class GungorsProgramCard extends HTMLElement {
       orig: { uid: ev.uid, recurrence_id: ev.recurrence_id || null, rrule: ev.rrule || null },
       summary: ev.summary || "", allDay,
       sDate: s.date, sTime: s.time, eDate: e.date, eTime: e.time,
+      sMode: p?.start ? p.start.event : "time", sOff: String(p?.start ? p.start.offset : 0),
+      eMode: p?.end ? p.end.event : "time", eOff: String(p?.end ? p.end.offset : 0),
       mode: rr.mode, days: rr.days, rawRrule: rr.raw,
       targets: p ? p.target.map((t) => (String(t).includes(".") ? t : this._areaIdOf(t) || t)) : [],
       lines: p ? linesOf(p.rules) : [],
@@ -653,19 +700,55 @@ class GungorsProgramCard extends HTMLElement {
     return rules;
   }
 
+  // The sun-relative start and end of the form ({start, end} as parseSun gives them).
+  _sunOf(f) {
+    const sun = {};
+    if (f.allDay) return sun;
+    if (f.sMode !== "time") sun.start = { event: f.sMode, offset: Math.round(num(f.sOff) || 0) };
+    if (f.eMode !== "time") sun.end = { event: f.eMode, offset: Math.round(num(f.eOff) || 0) };
+    return sun;
+  }
+
+  // A form side's clock time on a date: its own, or the sun's guess.
+  _sideTime(f, side, date) {
+    const mode = f[`${side}Mode`];
+    if (f.allDay || mode === "time") return f[`${side}Time`];
+    const c = this._hass?.config || {};
+    const at = sunMs(mode, date, c.latitude ?? 52.37, c.longitude ?? 4.89);
+    if (at === null) return f[`${side}Time`];
+    return partsInTz(new Date(at + Math.round(num(f[`${side}Off`]) || 0) * 6e4), this._tz).time;
+  }
+
+  // Start and end as stored (the integration works out a sun-relative side for every day).
+  _span(f, sDate, eDate) {
+    const start = zonedIso(sDate, this._sideTime(f, "s", sDate), this._tz);
+    let end = zonedIso(eDate, this._sideTime(f, "e", eDate), this._tz);
+    if (f.eMode !== "time" && new Date(end) <= new Date(start)) {
+      const next = addDays(sDate, 1);
+      end = zonedIso(next, this._sideTime(f, "e", next), this._tz);
+    }
+    return { start, end };
+  }
+
   _programText(f) {
     if (f.rawMode) return f.rawDesc;
     const target = f.targets.map((t) => (String(t).includes(".") ? t : this._areaName(t)));
-    return dumpProgram(target, this._rulesOf(f.lines));
+    return dumpProgram(target, this._rulesOf(f.lines), this._sunOf(f));
   }
 
   _validate(f) {
     if (f.mode === "weekly" && !f.days.length) return "Haftanın en az bir gününü seç.";
     if (f.mode === "custom" && !f.rawRrule.trim()) return "Tekrar kuralını (RRULE) gir.";
-    if (!f.sDate || !f.eDate || (!f.allDay && (!f.sTime || !f.eTime))) return "Başlangıç ve bitişi doldur.";
-    if (f.allDay ? f.eDate < f.sDate : new Date(zonedIso(f.eDate, f.eTime, this._tz)) <= new Date(zonedIso(f.sDate, f.sTime, this._tz)))
-      return "Bitiş, başlangıçtan sonra olmalı.";
-    if (f.rawMode) return parseProgram(f.rawDesc) ? null : "Açıklama geçerli bir program değil (target ve rules gerekli).";
+    if (!f.sDate || !f.eDate || (!f.allDay && ((f.sMode === "time" && !f.sTime) || (f.eMode === "time" && !f.eTime))))
+      return "Başlangıç ve bitişi doldur.";
+    if (!f.allDay) for (const side of ["s", "e"])
+      if (f[`${side}Mode`] !== "time" && num(f[`${side}Off`]) === null) return "Güneşe göre saat için dakika gir (ör. -30).";
+    if (f.eDate < f.sDate) return "Bitiş, başlangıçtan sonra olmalı.";
+    if (!f.allDay) {
+      const { start, end } = this._span(f, f.sDate, f.eDate);
+      if (new Date(end) <= new Date(start)) return "Bitiş, başlangıçtan sonra olmalı.";
+    }
+    if (f.rawMode) return parseProgram(f.rawDesc) ? null : "Açıklama geçerli bir program değil (target ve rules gerekli; start/end: sunrise ya da sunset, ör. sunset-30m).";
     if (!f.targets.length) return "En az bir oda ya da cihaz seç.";
     if (!f.lines.length) return "En az bir kural ekle.";
     const seen = {};
@@ -693,11 +776,12 @@ class GungorsProgramCard extends HTMLElement {
       sDate = addDays(sDate, shift);
       eDate = addDays(eDate, shift);
     }
+    const span = f.allDay ? null : this._span(f, sDate, eDate);
     const event = {
       summary: f.summary.trim() || "Program",
       description: this._programText(f),
-      dtstart: f.allDay ? sDate : zonedIso(sDate, f.sTime, this._tz),
-      dtend: f.allDay ? addDays(eDate, 1) : zonedIso(eDate, f.eTime, this._tz),
+      dtstart: f.allDay ? sDate : span.start,
+      dtend: f.allDay ? addDays(eDate, 1) : span.end,
     };
     if (f.mode === "daily") event.rrule = "FREQ=DAILY";
     else if (f.mode === "weekly") event.rrule = `FREQ=WEEKLY;BYDAY=${WD.map((w) => w[0]).filter((d) => f.days.includes(d)).join(",")}`;
@@ -752,9 +836,12 @@ class GungorsProgramCard extends HTMLElement {
   async _endNow(ev) {
     if (!confirm(`"${ev.summary}" şimdi bitirilsin mi?`)) return;
     const end = new Date(Math.max(Date.now(), ev._st.getTime() + 60e3));
+    // a sun-relative end would still win over the new end: drop it for this occurrence
+    const p = ev._p;
+    const description = p?.end ? dumpProgram(p.target, p.rules, { start: p.start }) : ev.description || "";
     const event = {
       summary: ev.summary,
-      description: ev.description || "",
+      description,
       // both in UTC: Home Assistant wants the same timezone on start and end
       dtstart: ev.start.dateTime ? new Date(ev.start.dateTime).toISOString() : ev.start.date,
       dtend: ev.start.dateTime ? end.toISOString() : ev.end.date,
@@ -830,6 +917,8 @@ class GungorsProgramCard extends HTMLElement {
       if (p) {
         f.targets = p.target.map((t) => (String(t).includes(".") ? t : this._areaIdOf(t) || t));
         f.lines = linesOf(p.rules);
+        f.sMode = p.start ? p.start.event : "time"; f.sOff = String(p.start ? p.start.offset : 0);
+        f.eMode = p.end ? p.end.event : "time"; f.eOff = String(p.end ? p.end.offset : 0);
         f.rawMode = false; f.rawBad = false; this._formError = null;
       } else this._formError = "Açıklama hâlâ geçerli bir program değil.";
       this._render();
@@ -883,7 +972,8 @@ class GungorsProgramCard extends HTMLElement {
     const tz = this._tz;
     const s = partsInTz(ev._st, tz), e = partsInTz(ev._en, tz);
     const days = Math.round((Date.parse(e.date) - Date.parse(s.date)) / 864e5);
-    return `${s.time}–${e.time}${days > 0 ? ` (+${days})` : ""}`;
+    const sun = (k) => (ev._p?.[k] ? "☀" : "");
+    return `${s.time}${sun("start")}–${e.time}${sun("end")}${days > 0 ? ` (+${days})` : ""}`;
   }
 
   // the start time, then the rest (hidden in the narrow grid)
@@ -895,7 +985,9 @@ class GungorsProgramCard extends HTMLElement {
 
   _ruleChips(ev) {
     if (!ev._p) return `<span class="chip warn">Okunamayan açıklama</span>`;
-    return Object.entries(ev._p.rules).map(([k, v]) => ruleChip(k, v)).join("");
+    const sun = [["start", "Başlangıç"], ["end", "Bitiş"]].filter(([k]) => ev._p[k])
+      .map(([k, w]) => `<span class="chip" title="${w}: ${esc(sunLabel(ev._p[k]))}"><ha-icon icon="mdi:weather-sunset-${ev._p[k].event === "sunrise" ? "up" : "down"}"></ha-icon>${w}: ${esc(sunLabel(ev._p[k]))}</span>`).join("");
+    return sun + Object.entries(ev._p.rules).map(([k, v]) => ruleChip(k, v)).join("");
   }
 
   _activeHtml() {
@@ -1122,6 +1214,19 @@ class GungorsProgramCard extends HTMLElement {
       <div class="note">Uygula açık: sistem kuralı kendisi uygular (gerekirse ışığı ya da ısıtmayı açar) ve program bitince cihaz varsayılana döner (ışık kapalı, renk beyaz, ısıtma kapalı, perde gündüz açık / gece kapalı). Kapalı: kapalı cihaz kurala uyar sayılır, sadece kurala uymayan değişikliğe izin verilmez; bitince kural kalkar.</div></div>`;
   }
 
+  // One side's time: a clock time, or sunrise / sunset with an offset in minutes.
+  _sideHtml(f, side, label) {
+    const mode = f[`${side}Mode`];
+    const opts = [["time", "Saat"], ["sunrise", "Gün doğumu"], ["sunset", "Gün batımı"]]
+      .map(([v, l]) => `<option value="${v}" ${v === mode ? "selected" : ""}>${l}</option>`).join("");
+    const sel = `<select data-f="${side}Mode" data-rr aria-label="${label} türü">${opts}</select>`;
+    if (mode === "time")
+      return `<div class="field"><label>${label} saati</label><div class="sunrow">${sel}<input type="time" data-f="${side}Time" value="${esc(f[`${side}Time`])}"></div></div>`;
+    const date = f[`${side}Date`];
+    return `<div class="field"><label>${label} (± dk)</label><div class="sunrow">${sel}<input type="number" step="5" data-f="${side}Off" data-rr value="${esc(f[`${side}Off`])}" aria-label="${label} sapması (dakika)"></div>
+      <div class="note">${esc(fmtDay(date))} ≈ ${esc(this._sideTime(f, side, date))}</div></div>`;
+  }
+
   _formHtml() {
     const f = this._form, b = this._busy ? "disabled" : "";
     const modeOpts = [["none", "Tekrar yok"], ["daily", "Her gün"], ["weekly", "Haftanın belirli günleri"], ["custom", "Özel (RRULE)"]]
@@ -1133,9 +1238,10 @@ class GungorsProgramCard extends HTMLElement {
           <div class="field"><label>Son gün</label><input type="date" data-f="eDate" value="${esc(f.eDate)}"></div></div>`
       : `<div class="grid2">
           <div class="field"><label>Başlangıç tarihi</label><input type="date" data-f="sDate" value="${esc(f.sDate)}"></div>
-          <div class="field"><label>Başlangıç saati</label><input type="time" data-f="sTime" value="${esc(f.sTime)}"></div>
+          ${this._sideHtml(f, "s", "Başlangıç")}
           <div class="field"><label>Bitiş tarihi</label><input type="date" data-f="eDate" value="${esc(f.eDate)}"></div>
-          <div class="field"><label>Bitiş saati</label><input type="time" data-f="eTime" value="${esc(f.eTime)}"></div></div>`;
+          ${this._sideHtml(f, "e", "Bitiş")}</div>
+        ${f.sMode !== "time" || f.eMode !== "time" ? `<div class="note">Güneşe göre saat her gün o günün gün doğumu ya da batımına göre hesaplanır; gösterilen saat seçili günün yaklaşık değeri.</div>` : ""}`;
     const program = f.rawMode
       ? `<div class="field"><label>Program (YAML)</label>
           ${f.rawBad ? `<div class="err">Bu kaydın açıklaması program olarak okunamadı. Düzeltip forma geçebilirsin.</div>` : ""}
