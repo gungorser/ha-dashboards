@@ -20,9 +20,11 @@
 //
 // View: the programs active now (each with stop: the running occurrence ends now, and pause /
 // resume: gungors.pause_program / resume_program, the calendar's `paused` attribute),
-// and a week grid, one row per room with a program that week (an entity target without an
-// area gets its own row), one column per day. Tap an entry to edit it; "Yeni" adds one.
-const VERSION = "1.5.0";
+// and a timeline of the week or of one day (Hafta / Gün), one row per room with a program in
+// that range (an entity target without an area gets its own row). Each occurrence is one bar
+// from its start to its end, also across midnight; overlapping ones stack. Tap a bar to edit
+// it, a day in the week header to open that day; "Yeni" adds an entry.
+const VERSION = "1.6.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -335,7 +337,6 @@ ha-card{padding:16px;color:var(--primary-text-color)}
 .ev .mini ha-icon.set{color:var(--primary-color)}
 .chip ha-icon{--mdc-icon-size:16px;display:inline-flex}
 .sw{display:inline-block;width:11px;height:11px;border-radius:50%;border:1px solid var(--divider-color)}
-.ev .mini{display:flex;flex-wrap:wrap;align-items:center;gap:3px;margin-top:2px}
 .ev .mini ha-icon{--mdc-icon-size:14px;display:inline-flex}
 .chip.warn{color:var(--error-color);border-color:var(--error-color)}
 .nav{display:flex;align-items:center;gap:8px}
@@ -346,27 +347,48 @@ ha-card{padding:16px;color:var(--primary-text-color)}
 .dcol{display:flex;gap:6px;align-items:center}
 .dcol input[type=color]{width:48px;height:40px;padding:2px;flex:none}
 .note.ok{color:var(--success-color,#43a047)}
-.wk{overflow-x:auto}
-table{border-collapse:collapse;width:100%;table-layout:fixed}
-th,td{border:1px solid var(--divider-color);padding:4px;vertical-align:top;font-size:.8rem}
-th{font-weight:500;color:var(--secondary-text-color);background:var(--secondary-background-color)}
-th.room{width:110px;text-align:left}
-th.today{color:var(--primary-color)}
-td.room{font-weight:500}
-.ev{display:block;width:100%;box-sizing:border-box;text-align:left;margin:0 0 3px;padding:3px 5px;border-radius:5px;border:0;border-left:3px solid var(--primary-color);background:var(--secondary-background-color);color:inherit;font:inherit;font-size:.75rem;cursor:pointer;line-height:1.25}
+.head.wrap{flex-wrap:wrap}
+.seg{display:inline-flex}
+.seg .btn{border-radius:0}
+.seg .btn:first-child{border-radius:6px 0 0 6px}
+.seg .btn:last-child{border-radius:0 6px 6px 0;margin-left:-1px}
+.seg .btn.on{background:var(--primary-color);border-color:var(--primary-color);color:var(--text-primary-color,#fff)}
+.tl{--lane:30px;--room:110px;border:1px solid var(--divider-color);border-radius:6px;overflow:hidden}
+.tr{display:grid;grid-template-columns:var(--room) minmax(0,1fr);border-top:1px solid var(--divider-color)}
+.tr.hd{border-top:0;background:var(--secondary-background-color)}
+.tr .room{padding:6px;font-size:.8rem;font-weight:500;border-right:1px solid var(--divider-color);overflow-wrap:anywhere}
+.tr.hd .room{color:var(--secondary-text-color)}
+.axis{position:relative;height:30px}
+.ax{position:absolute;top:0;height:100%;box-sizing:border-box;font-size:.75rem;font-weight:500;color:var(--secondary-text-color);display:flex;align-items:center}
+.ax.day7{justify-content:center;background:none;border:0;padding:0;font:inherit;font-size:.75rem;font-weight:500;color:inherit;cursor:pointer;color:var(--secondary-text-color)}
+.ax.day7:hover{color:var(--primary-color)}
+.ax.today{color:var(--primary-color)}
+.ax.hr{transform:translateX(3px)}
+.ax .nw{display:none}
+.track{position:relative;min-height:36px}
+.gl{position:absolute;top:0;bottom:0;width:1px;background:var(--divider-color)}
+.gl.minor{opacity:.4}
+.td{position:absolute;top:0;bottom:0;background:var(--primary-color);opacity:.06}
+.nl{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:var(--success-color,#43a047);z-index:2}
+.ev{position:absolute;height:calc(var(--lane) - 4px);box-sizing:border-box;display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden;white-space:nowrap;text-align:left;padding:0 6px;border-radius:5px;border:0;border-left:3px solid var(--primary-color);background:var(--card-background-color,#fff);box-shadow:inset 0 0 0 1px var(--divider-color);color:inherit;font:inherit;font-size:.75rem;cursor:pointer;z-index:1}
+.ev:hover{z-index:3;box-shadow:inset 0 0 0 1px var(--primary-color)}
+.ev.cl{border-top-left-radius:0;border-bottom-left-radius:0;border-left-style:dashed}
+.ev.cr{border-top-right-radius:0;border-bottom-right-radius:0}
 .ev.now{border-left-color:var(--success-color,#43a047)}
 .ev.bad{border-left-color:var(--error-color)}
-.ev .tm{color:var(--secondary-text-color)}
-.ev .sm{display:block;overflow:hidden;text-overflow:ellipsis}
-th .nw,th .nd{display:none}
+.ev .tm{color:var(--secondary-text-color);flex:none}
+.ev .te{display:none} /* the bar shows where it ends; the tooltip has the full time */
+.ev .sm{overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0}
+.ev .mini{display:flex;align-items:center;gap:3px;flex:none}
+.ev .mini ha-icon{--mdc-icon-size:14px;display:inline-flex}
 @container (max-width: 640px) {
   ha-card{padding:12px 8px}
-  th,td{padding:2px;font-size:.7rem}
-  th.room{width:58px}
-  td.room{word-break:break-word;hyphens:auto}
-  th .wd{display:none}
-  th .nw,th .nd{display:block}
-  .ev{padding:2px 3px;font-size:.68rem;border-left-width:2px}
+  .tl{--room:64px;--lane:26px}
+  .tr .room{padding:4px;font-size:.7rem;hyphens:auto}
+  .ax{font-size:.65rem}
+  .ax .wd{display:none}
+  .ax .nw{display:inline}
+  .ev{padding:0 3px;gap:3px;font-size:.68rem;border-left-width:2px}
   .ev .te,.ev .sm{display:none}
   .ev .mini ha-icon{--mdc-icon-size:12px}
   .ev .mini{gap:1px}
@@ -414,6 +436,8 @@ class GungorsProgramCard extends HTMLElement {
     this._events = [];
     this._active = [];
     this._week = null;
+    this._day = null;
+    try { this._view = localStorage.getItem("gungors-program-view") === "day" ? "day" : "week"; } catch (_) { this._view = "week"; }
     this.shadowRoot.addEventListener("click", (e) => this._onClick(e));
     this.shadowRoot.addEventListener("input", (e) => this._onInput(e));
     this.shadowRoot.addEventListener("change", (e) => this._onInput(e));
@@ -431,7 +455,8 @@ class GungorsProgramCard extends HTMLElement {
     const changed = cal !== this._calState;
     this._calState = cal;
     if (first) {
-      this._week = this._monday(partsInTz(new Date(), this._tz).date);
+      this._day = partsInTz(new Date(), this._tz).date;
+      this._week = this._monday(this._day);
       this._load();
     } else if (changed && !this._form && this._tab !== "defaults") this._load(); // entries or pauses changed
   }
@@ -441,6 +466,14 @@ class GungorsProgramCard extends HTMLElement {
   static getStubConfig() { return { entity: DEFAULT_CAL }; }
   get _tz() { return this._hass?.config?.time_zone || Intl.DateTimeFormat().resolvedOptions().timeZone; }
   _monday(date) { return addDays(date, -weekdayIdx(date)); }
+  // the shown range: the week from Monday, or one day
+  get _range() { return this._view === "day" ? { start: this._day, days: 1 } : { start: this._week, days: 7 }; }
+  _setView(view, day) {
+    this._view = view;
+    if (day) { this._day = day; this._week = this._monday(day); }
+    try { localStorage.setItem("gungors-program-view", view); } catch (_) { /* per-browser convenience only */ }
+    this._load();
+  }
 
   // ---------- registry helpers ----------
   _areaName(id) { return this._hass?.areas?.[id]?.name || id; }
@@ -512,8 +545,9 @@ class GungorsProgramCard extends HTMLElement {
     this._render();
     try {
       const tz = this._tz;
-      const ws = new Date(zonedIso(this._week, "00:00", tz));
-      const we = new Date(zonedIso(addDays(this._week, 7), "00:00", tz));
+      const r = this._range;
+      const ws = new Date(zonedIso(r.start, "00:00", tz));
+      const we = new Date(zonedIso(addDays(r.start, r.days), "00:00", tz));
       const now = new Date();
       const [events, active] = await Promise.all([this._fetch(ws, we), this._fetch(now, new Date(now.getTime() + 1000))]);
       this._events = events;
@@ -734,9 +768,12 @@ class GungorsProgramCard extends HTMLElement {
     else if (a === "end") { this._endNow(this._find(el.dataset.k)); }
     else if (a === "pause" || a === "resume") { this._pause(this._find(el.dataset.k), a === "resume"); }
     else if (a === "prev" || a === "next" || a === "today") {
-      this._week = a === "today" ? this._monday(partsInTz(new Date(), this._tz).date) : addDays(this._week, a === "prev" ? -7 : 7);
+      const step = this._view === "day" ? 1 : 7;
+      this._day = a === "today" ? partsInTz(new Date(), this._tz).date : addDays(this._day, a === "prev" ? -step : step);
+      this._week = this._monday(this._day);
       this._load();
-    } else if (a === "reload") this._load();
+    } else if (a === "view") this._setView(el.dataset.v);
+    else if (a === "openday") this._setView("day", el.dataset.d); else if (a === "reload") this._load();
     else if (a === "cancel") { this._form = null; this._formError = null; this._render(); }
     else if (a === "save") this._save();
     else if (a === "delete") this._delete();
@@ -851,51 +888,84 @@ class GungorsProgramCard extends HTMLElement {
     }).join("");
   }
 
-  _weekHtml() {
+  // Each occurrence is one bar from its start to its end (clipped to the shown range), so a
+  // program across midnight stays one piece; overlapping bars in a row go to separate lanes.
+  _timelineHtml() {
     const tz = this._tz;
-    const days = [...Array(7)].map((_, i) => addDays(this._week, i));
-    const today = partsInTz(new Date(), tz).date;
+    const { start, days } = this._range;
+    const rs = new Date(zonedIso(start, "00:00", tz)).getTime();
+    const re = new Date(zonedIso(addDays(start, days), "00:00", tz)).getTime();
+    const span = re - rs;
+    const pos = (t) => Math.min(100, Math.max(0, ((t - rs) / span) * 100));
     const now = new Date();
-    const rows = new Map(); // only rows with a program this week
+    const today = partsInTz(now, tz).date;
+    const minPct = days === 1 ? 4 : 6; // a short bar still gets room for its icons
+    const rows = new Map();
     for (const ev of this._events) {
-      const keys = ev._p ? this._rowsOf(ev._p.target) : ["x:?"];
-      for (const key of new Set(keys)) {
-        if (!rows.has(key)) rows.set(key, new Map());
-        const cells = rows.get(key);
-        days.forEach((d, i) => {
-          const ds = new Date(zonedIso(d, "00:00", tz)), de = new Date(zonedIso(addDays(d, 1), "00:00", tz));
-          if (ev._st < de && ev._en > ds) {
-            if (!cells.has(i)) cells.set(i, []);
-            cells.get(i).push(ev);
-          }
-        });
+      if (!(ev._st.getTime() < re && ev._en.getTime() > rs)) continue;
+      for (const key of new Set(ev._p ? this._rowsOf(ev._p.target) : ["x:?"])) {
+        if (!rows.has(key)) rows.set(key, []);
+        rows.get(key).push(ev);
       }
     }
-    const head = `<tr><th class="room">Oda</th>${days.map((d, i) => `<th class="${d === today ? "today" : ""}"><span class="wd">${WD[i][1]} ${fmtDay(d)}</span><span class="nw">${WD[i][1]}</span><span class="nd">${+d.slice(8)}</span></th>`).join("")}</tr>`;
+    // axis: the days of the week, or the hours of the day
+    let axis, grid;
+    if (days === 7) {
+      const ds = [...Array(7)].map((_, i) => addDays(start, i));
+      axis = ds.map((d, i) => `<button class="ax day7 ${d === today ? "today" : ""}" data-a="openday" data-d="${d}" title="Günü aç" style="left:${pos(new Date(zonedIso(d, "00:00", tz)).getTime())}%;width:${100 / 7}%"><span class="wd">${WD[i][1]} ${fmtDay(d)}</span><span class="nw">${WD[i][1]} ${+d.slice(8)}</span></button>`).join("");
+      grid = ds.slice(1).map((d) => `<i class="gl" style="left:${pos(new Date(zonedIso(d, "00:00", tz)).getTime())}%"></i>`).join("");
+      if (ds.includes(today)) {
+        const l = pos(new Date(zonedIso(today, "00:00", tz)).getTime());
+        grid += `<i class="td" style="left:${l}%;width:${100 / 7}%"></i>`;
+      }
+    } else {
+      const hours = [...Array(24)].map((_, h) => h);
+      axis = hours.filter((h) => h % 3 === 0).map((h) => `<span class="ax hr" style="left:${pos(new Date(zonedIso(start, `${pad(h)}:00`, tz)).getTime())}%">${pad(h)}</span>`).join("");
+      grid = hours.slice(1).map((h) => `<i class="gl ${h % 3 ? "minor" : ""}" style="left:${pos(new Date(zonedIso(start, `${pad(h)}:00`, tz)).getTime())}%"></i>`).join("");
+    }
+    if (now.getTime() >= rs && now.getTime() < re) grid += `<i class="nl" style="left:${pos(now.getTime())}%"></i>`;
     const body = [...rows.entries()]
       .sort((a, b) => this._rowName(a[0]).localeCompare(this._rowName(b[0]), "tr"))
-      .map(([key, cells]) => `<tr><td class="room">${esc(key === "x:?" ? "Hatalı" : this._rowName(key))}</td>${days.map((_, i) => {
-        const evs = (cells.get(i) || []).sort((a, b) => a._st - b._st);
-        return `<td>${evs.map((ev) => `<button class="ev ${ev._st <= now && ev._en > now ? "now" : ""} ${ev._p ? "" : "bad"}" data-a="edit" data-k="${esc(this._key(ev))}" title="${esc(`${ev.summary || ""} ${this._timeText(ev)}\n` + (ev._p ? Object.entries(ev._p.rules).map(([k, v]) => ruleText(k, v)).join(", ") : "Okunamayan açıklama"))}">
-          <span class="tm">${this._tmHtml(ev)}</span><span class="sm">${esc(ev.summary || "(başlıksız)")}</span>${ev._p ? `<span class="mini">${Object.entries(ev._p.rules).map(([k, v]) => ruleMini(k, v)).join("")}</span>` : ""}</button>`).join("")}</td>`;
-      }).join("")}</tr>`).join("");
-    return `<div class="wk"><table>${head}${body || `<tr><td colspan="8" class="empty">Bu hafta program yok.</td></tr>`}</table></div>`;
+      .map(([key, evs]) => {
+        evs.sort((a, b) => a._st - b._st || b._en - a._en);
+        const lanes = []; // each lane: where its last bar ends (in %, with the minimum width)
+        const bars = evs.map((ev) => {
+          const l = pos(ev._st.getTime()), r = pos(ev._en.getTime());
+          const shown = Math.max(r, l + minPct);
+          let lane = lanes.findIndex((end) => end <= l);
+          if (lane < 0) { lane = lanes.length; lanes.push(0); }
+          lanes[lane] = shown;
+          const cls = [ev._st <= now && ev._en > now ? "now" : "", ev._p ? "" : "bad",
+            ev._st.getTime() < rs ? "cl" : "", ev._en.getTime() > re ? "cr" : ""].join(" ");
+          const tip = `${ev.summary || ""} ${this._timeText(ev)}\n` + (ev._p ? Object.entries(ev._p.rules).map(([k, v]) => ruleText(k, v)).join(", ") : "Okunamayan açıklama");
+          return `<button class="ev ${cls}" data-a="edit" data-k="${esc(this._key(ev))}" title="${esc(tip)}" style="left:${l}%;width:${Math.min(100, shown) - l}%;top:calc(${lane} * var(--lane) + 3px)">
+            <span class="tm">${this._tmHtml(ev)}</span><span class="sm">${esc(ev.summary || "(başlıksız)")}</span>${ev._p ? `<span class="mini">${Object.entries(ev._p.rules).map(([k, v]) => ruleMini(k, v)).join("")}</span>` : ""}</button>`;
+        });
+        return `<div class="tr"><div class="room">${esc(key === "x:?" ? "Hatalı" : this._rowName(key))}</div><div class="track" style="height:calc(${lanes.length} * var(--lane) + 6px)">${grid}${bars.join("")}</div></div>`;
+      }).join("");
+    return `<div class="tl"><div class="tr hd"><div class="room">Oda</div><div class="axis">${axis}</div></div>${body || `<div class="empty">${days === 1 ? "Bu gün" : "Bu hafta"} program yok.</div>`}</div>`;
   }
 
   _listHtml() {
     const c = this._config;
     if (!this._week) return `<div class="head"><div class="title">${esc(c.title)}</div></div><div class="empty">Yükleniyor…</div>`;
-    const days = [this._week, addDays(this._week, 6)];
+    const day = this._view === "day";
+    const label = day
+      ? `${WD[weekdayIdx(this._day)][1]} ${fmtDate(this._day)}`
+      : `Hafta ${fmtDate(this._week)} – ${fmtDate(addDays(this._week, 6))}`;
     if (this._tab === "defaults") return `${this._tabsHtml()}${this._defaultsHtml()}`;
     return `${this._tabsHtml()}<div class="head"><div class="title">${esc(c.title)}</div><button class="btn primary" data-a="new">Yeni</button></div>
       ${this._error ? `<div class="err">${esc(this._error)} <button class="btn small" data-a="reload">Tekrar dene</button></div>` : ""}
       <div class="sec">Şu an aktif</div>
       ${this._loading ? `<div class="empty">Yükleniyor…</div>` : this._activeHtml()}
-      <div class="head" style="margin-top:12px">
-        <div class="sec" style="margin:0">Hafta ${esc(fmtDate(days[0]))} – ${esc(fmtDate(days[1]))}</div>
-        <div class="nav"><button class="btn small" data-a="prev" aria-label="Önceki hafta">‹</button><button class="btn small" data-a="today">Bu hafta</button><button class="btn small" data-a="next" aria-label="Sonraki hafta">›</button></div>
+      <div class="head wrap" style="margin-top:12px">
+        <div class="sec" style="margin:0">${esc(label)}</div>
+        <div class="nav">
+          <div class="seg" role="group" aria-label="Görünüm">${[["week", "Hafta"], ["day", "Gün"]].map(([v, x]) => `<button class="btn small ${this._view === v ? "on" : ""}" data-a="view" data-v="${v}" aria-pressed="${this._view === v}">${x}</button>`).join("")}</div>
+          <button class="btn small" data-a="prev" aria-label="${day ? "Önceki gün" : "Önceki hafta"}">‹</button><button class="btn small" data-a="today">${day ? "Bugün" : "Bu hafta"}</button><button class="btn small" data-a="next" aria-label="${day ? "Sonraki gün" : "Sonraki hafta"}">›</button>
+        </div>
       </div>
-      ${this._weekHtml()}`;
+      ${this._timelineHtml()}`;
   }
 
   _tabsHtml() {
