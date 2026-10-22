@@ -39,8 +39,9 @@
  * stream (a picture-entity card, camera_view live). If the camera is not streaming, the card first starts
  * it: `start` (a service, called with the camera's entity_id; e.g. eufy_security.start_p2p_livestream),
  * else camera.turn_on when the camera supports it; the picture shows once the camera is `streaming`
- * (up to 30 s). Closing the popup stops a stream the card started (`stop`, else camera.turn_off); a start
- * that fails shows its error in the popup and nothing is stopped. A camera whose stream runs over RTSP
+ * (up to 45 s). A start that fails is tried once more (a sleeping battery camera may miss the first one);
+ * a second failure shows its error in the popup (no toast) and nothing is stopped. Closing the popup stops
+ * a stream the card started (`stop`, else camera.turn_off). A camera whose stream runs over RTSP
  * (Eufy with RTSP on) needs start_rtsp_livestream / stop_rtsp_livestream, not the P2P ones.
  *
  * Qibla: in the sun mode of the dock the card asks the page for its qibla compass ({gf: "compass", value:
@@ -172,7 +173,7 @@ const CLIMATE_COLOR = "#e62823";
 // border colour of a camera ("other" on the page), unless YAML colours it
 const OTHER_COLOR = "#2ecc5a";
 // how long the live view waits for a camera to start streaming
-const STREAM_WAIT_MS = 30000;
+const STREAM_WAIT_MS = 45000;
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
 const CSS = `
@@ -645,7 +646,9 @@ class GungorsFloorCard extends HTMLElement {
   _openCamera(entity, act, title) {
     const st = this._hass.states[entity];
     if (!st) return;
-    const call = (svc) => { const [d, s] = svc.split("."); return this._hass.callService(d, s, { entity_id: entity }); };
+    // over the websocket, not hass.callService: a failure goes to the popup, not to a toast
+    const call = (svc) => { const [d, s] = svc.split(".");
+      return this._hass.callWS({ type: "call_service", domain: d, service: s, target: { entity_id: entity } }); };
     let start = null, stop = null;
     if (st.state !== "streaming") {
       const onOff = (st.attributes.supported_features || 0) & 1;    // CameraEntityFeature.ON_OFF
@@ -657,8 +660,14 @@ class GungorsFloorCard extends HTMLElement {
     this._openPopup({ title: title || st.attributes.friendly_name || entity, camera: entity,
                       onClose: stop ? () => { if (started) call(stop).catch(() => {}); } : null });
     const pop = this._pop;
-    if (start) call(start).then(() => { started = true; if (stop && this._pop !== pop) call(stop).catch(() => {}); },
-      (e) => { if (this._pop === pop && pop.fail) pop.fail("the stream could not start" + (e && e.message ? ": " + e.message : "")); });
+    // a sleeping battery camera may miss the first start (Eufy gives up after 15 s): try once more
+    const ok = () => { started = true; if (stop && this._pop !== pop) call(stop).catch(() => {}); };
+    const bad = (e) => { if (this._pop === pop && pop.fail) pop.fail("the stream could not start" + (e && e.message ? ": " + e.message : "")); };
+    if (start) call(start).then(ok, () => {
+      if (this._pop !== pop) return;
+      if (pop.retry) pop.retry();
+      call(start).then(ok, bad);
+    });
   }
 
   // popup body of a live view: a message until the camera streams, then a picture-entity card (live)
@@ -680,11 +689,13 @@ class GungorsFloorCard extends HTMLElement {
     };
     pop.update = () => { const s = this._hass.states[entity]; if (s && s.state === "streaming") show(); };
     pop.fail = (t) => { pop.update = null; clearTimeout(pop.timer); msg(t); };
-    pop.timer = setTimeout(() => {
+    const wait = () => setTimeout(() => {
       if (this._pop !== pop || !pop.update) return;
       pop.update = null;
       msg("the camera did not start streaming");
     }, STREAM_WAIT_MS);
+    pop.timer = wait();
+    pop.retry = () => { clearTimeout(pop.timer); msg("waking the camera, trying again..."); pop.timer = wait(); };
     pop.update();
   }
 
