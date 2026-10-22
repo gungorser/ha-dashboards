@@ -27,7 +27,7 @@
 // that range (an entity target without an area gets its own row). Each occurrence is one bar
 // from its start to its end, also across midnight; overlapping ones stack. Tap a bar to edit
 // it, a day in the week header to open that day; "Yeni" adds an entry.
-const VERSION = "1.8.0";
+const VERSION = "1.9.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -414,12 +414,10 @@ ha-card{padding:16px;color:var(--primary-text-color)}
 .tab{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;font:inherit;color:var(--secondary-text-color);cursor:pointer}
 .tab.on{color:var(--primary-color);border-bottom-color:var(--primary-color);font-weight:500}
 .drow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:8px;align-items:center;padding:4px 0}
-.dcol{display:flex;gap:6px;align-items:center}
-.dcol input[type=color]{width:48px;height:40px;padding:2px;flex:none}
 .note.ok{color:var(--success-color,#43a047)}
 .note code{word-break:break-all}
-.tplrow{padding:0 0 4px}
-input.tpl{font-family:var(--code-font-family,monospace);font-size:.8rem;min-width:0;width:100%}
+.drow code{font-size:.8rem;word-break:break-all}
+.drow .muted{opacity:.6}
 .head.wrap{flex-wrap:wrap}
 .seg{display:inline-flex}
 .seg .btn{border-radius:0}
@@ -877,9 +875,7 @@ class GungorsProgramCard extends HTMLElement {
     if (!el || el.disabled) return;
     const a = el.dataset.a;
     const f = this._form;
-    if (a === "tab") { this._tab = el.dataset.t; this._defs = null; this._defsPosMode = null; this._defsError = null; this._defsSaved = false; this._render(); return; }
-    if (a === "defs-save") { this._saveDefaults(); return; }
-    if (a === "defs-reset") { this._defs = null; this._defsPosMode = null; this._defsError = null; this._defsSaved = false; this._render(); return; }
+    if (a === "tab") { this._tab = el.dataset.t; this._render(); return; }
     if (a === "new") { this._openForm(this._newForm()); }
     else if (a === "edit") { this._openForm(this._formFromEvent(this._find(el.dataset.k))); }
     else if (a === "end") { this._endNow(this._find(el.dataset.k)); }
@@ -933,10 +929,6 @@ class GungorsProgramCard extends HTMLElement {
 
   _onInput(e) {
     const el = e.target;
-    if ("dk" in el.dataset) {
-      if (this._defaultsInput(el) && e.type === "change") this._render();
-      return;
-    }
     if (!this._form) return;
     const f = this._form;
     if ("ri" in el.dataset) {
@@ -1111,69 +1103,22 @@ class GungorsProgramCard extends HTMLElement {
     return d;
   }
 
+  // Read only: the defaults live in ha-configs packages/program.yaml (gungors 1.9.0).
   _defaultsHtml() {
-    const d = this._defs || (this._defs = this._defaultsDraft());
-    const row = (label, ctl) => `<div class="drow"><span>${esc(label)}</span>${ctl}</div>`;
-    const sel = (key, value, options) => `<select data-dk="${key}" aria-label="${esc(key)}">${options.map(([k, x]) =>
-      `<option value="${esc(k)}" ${String(value ?? "") === k ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>`;
-    // a template default (set in YAML or here) is edited as text
-    const tplIn = (key, value, label) => `<input type="text" class="tpl" data-dk="${key}_tpl" value="${esc(value)}" aria-label="${esc(label)} şablonu" spellcheck="false">`;
-    const numIn = (key, value, a) => isTpl(value) ? tplIn(key, value, a.label)
-      : `<input type="number" data-dk="${key}" min="${a.min}" max="${a.max}" step="${a.step}" value="${value ?? ""}" placeholder="yok" aria-label="${esc(a.label)}">`;
-    const L = d.light, C = d.climate, V = d.cover;
-    const color = L.color === undefined || isTpl(L.color) ? "" : hex(Array.isArray(L.color) ? L.color : COLOR_NAMES[L.color] || [255, 255, 255]);
-    const pos = this._defsPosMode || (V.position === undefined ? "" : V.position === SUN_TEMPLATE ? "sun" : isTpl(V.position) ? "tpl" : "value");
+    const d = this._defaultsDraft();
+    const value = (attr, v) => {
+      if (v === undefined) return `<span class="muted">değişmez</span>`;
+      if (attr === "position" && v === SUN_TEMPLATE) return "güneşe göre";
+      if (isTpl(v)) return `<code>${esc(v)}</code>`;
+      return ruleValue(attr, v);
+    };
+    const sec = (title, dom, attrs) => `<div class="sec">${title}</div>${attrs.map((attr) =>
+      `<div class="drow"><span>${esc(ATTRS[attr].label)}</span><span>${value(attr, d[dom][attr])}</span></div>`).join("")}`;
     return `<div class="head"><div class="title">Varsayılanlar</div></div>
-      <div class="note" style="margin:0 0 8px">Uygula açık bir kural bitince cihaz bu değerlere döner. Değer bir Jinja şablonu da olabilir; sonucu değişince yeniden uygulanır (güneşe göre perde: gün doğumunda açılır, batımında kapanır). Boş bırakılan özellik değişmez. Bir cihaz kendi YAML'ındaki <code>- program: {...}</code> ile bunları ezebilir.</div>
-      ${this._defsError ? `<div class="err">${esc(this._defsError)}</div>` : ""}
-      ${this._defsSaved ? `<div class="note ok">Kaydedildi.</div>` : ""}
-      <div class="sec">Işık</div>
-      ${row("Açık / kapalı", isTpl(L.on) ? tplIn("light.on", L.on, "Açık / kapalı") : sel("light.on", L.on === undefined ? "" : String(L.on), [["", "değişmez"], ["true", "açık"], ["false", "kapalı"]]))}
-      ${row("Renk", isTpl(L.color) ? tplIn("light.color", L.color, "Renk") : `<span class="dcol">${sel("light.color_on", color ? "1" : "", [["", "değişmez"], ["1", "renk"]])}${color ? `<input type="color" data-dk="light.color" value="${color}" aria-label="Renk">` : ""}</span>`)}
-      ${row("Parlaklık (%)", numIn("light.brightness", L.brightness, ATTRS.brightness))}
-      ${row("Renk sıcaklığı (K)", numIn("light.color_temp", L.color_temp, ATTRS.color_temp))}
-      <div class="sec">Isıtma</div>
-      ${row("Isıtma modu", isTpl(C.hvac_mode) ? tplIn("climate.hvac_mode", C.hvac_mode, "Isıtma modu") : sel("climate.hvac_mode", C.hvac_mode ?? "", [["", "değişmez"], ["heat", "Isıtma"], ["off", "Kapalı"]]))}
-      ${row("Sıcaklık (°C)", numIn("climate.temperature", C.temperature, ATTRS.temperature))}
-      <div class="sec">Perde</div>
-      ${row("Pozisyon", `<span class="dcol">${sel("cover.position_mode", pos, [["", "değişmez"], ["sun", "güneşe göre"], ["value", "sabit"], ["tpl", "şablon"]])}${pos === "value" ? numIn("cover.position", V.position, ATTRS.position) : ""}</span>`)}
-      ${pos === "tpl" ? `<div class="tplrow">${tplIn("cover.position", V.position ?? "", "Pozisyon")}<div class="note">Sonuç 0–100 arası bir sayı olmalı.</div></div>` : ""}
-      ${pos === "sun" ? `<div class="note">Şablon: <code>${esc(SUN_TEMPLATE)}</code></div>` : ""}
-      <div class="actions" style="margin-top:12px"><button class="btn" data-a="defs-reset">Geri al</button><button class="btn primary" data-a="defs-save" ${this._defsBusy ? "disabled" : ""}>Kaydet</button></div>`;
-  }
-
-  _defaultsInput(el) {
-    const d = this._defs || (this._defs = this._defaultsDraft());
-    const [dom, attr] = el.dataset.dk.split(".");
-    const v = el.value;
-    const set = (a, x) => { if (x === undefined) delete d[dom][a]; else d[dom][a] = x; };
-    if (attr.endsWith("_tpl")) { set(attr.slice(0, -4), v.trim() === "" ? undefined : v); this._defsSaved = false; return false; }
-    if (attr === "on") set("on", v === "" ? undefined : v === "true");
-    else if (attr === "color_on") set("color", v ? [255, 255, 255] : undefined);
-    else if (attr === "color") set("color", rgbOf(v));
-    else if (attr === "hvac_mode") set("hvac_mode", v || undefined);
-    else if (attr === "position_mode") {
-      const cur = d.cover.position;
-      set("position", v === "sun" ? SUN_TEMPLATE : v === "value" ? 100 : v === "tpl" ? (isTpl(cur) ? cur : SUN_TEMPLATE) : undefined);
-      this._defsPosMode = v; // "şablon" with the sun template stays an editable template
-    }
-    else set(attr, v === "" ? undefined : num(v) ?? undefined);
-    this._defsSaved = false;
-    return attr === "on" || attr.endsWith("_on") || attr.endsWith("_mode");
-  }
-
-  async _saveDefaults() {
-    this._defsBusy = true; this._defsError = null; this._render();
-    try {
-      const defaults = {};
-      for (const [dom, values] of Object.entries(this._defs))
-        defaults[dom] = Object.fromEntries(Object.entries(values).map(([a, v]) => [ATTRS[a].name, isTpl(v) ? v.trim() : valueOut(a, v)]));
-      await this._hass.callService("gungors", "set_program_defaults", { defaults }, { entity_id: this._config.entity });
-      this._defsSaved = true;
-    } catch (err) {
-      this._defsError = err?.message || String(err);
-    }
-    this._defsBusy = false; this._render();
+      <div class="note" style="margin:0 0 8px">Uygula açık bir kural bitince cihaz bu değerlere döner; şablon olanlar sonucu değişince yeniden uygulanır. Değiştirmek için ha-configs <code>packages/program.yaml</code> içindeki <code>defaults:</code> düzenlenir, sonra <code>gungors.reload</code>. Bir cihaz kendi YAML'ındaki <code>- program: {...}</code> ile bunları ezebilir.</div>
+      ${sec("Işık", "light", ["on", "color", "brightness", "color_temp"])}
+      ${sec("Isıtma", "climate", ["hvac_mode", "temperature"])}
+      ${sec("Perde", "cover", ["position"])}`;
   }
 
   _targetsHtml(f) {
