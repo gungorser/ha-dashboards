@@ -19,7 +19,7 @@
  * have arrived (the card sends {gf: "fed"} after its first full feed); the dock appears when the page
  * reports {gf: "shown"}. No tap highlight anywhere in the card (mobile would flash it on every tap).
  *
- * Dock: a quarter disc bottom left with the buttons heating, sun, floor and wall cut over a screen (clock,
+ * Dock: a quarter disc bottom left with the buttons heating, sun, cameras, floor and wall cut over a screen (clock,
  * date and the mode's rows). Heating: the climates of the floor shown (page type climate, in the order of
  * `entities`), one room at a time; each press of the heating button (while the heating mode is on) goes on
  * to the next room (after the last, back to the first; a floor switch starts at the first). The screen shows
@@ -29,6 +29,17 @@
  * and its link on the page. The card asks the page for a link
  * line from the screen to the room's radiator ({gf: "link", id, rect: the screen in page px}; {gf: "link",
  * id: null} in the other modes), drawn along the world axes and glowing only while hovered.
+ *
+ * Cameras: the camera mode of the dock (the cctv button) shows the cameras of the floor shown (page type
+ * camera, in the order of `entities`), one at a time; each press of the button (while the camera mode is
+ * on) goes on to the next camera. The screen shows its name, state and motion (the entity's `motion`
+ * binary sensor, optional); a tap / hold on the screen runs the camera's tap_action / hold_action, hovered
+ * it glows with the camera and its link line on the page (as in the heating mode).
+ * Live view: `action: camera` (tap_action or hold_action of a camera) opens a popup with the camera's live
+ * stream (a picture-entity card, camera_view live). If the camera is not streaming, the card first starts
+ * it: `start` (a service, called with the camera's entity_id; e.g. eufy_security.start_p2p_livestream),
+ * else camera.turn_on when the camera supports it; the picture shows once the camera is `streaming`
+ * (up to 30 s). Closing the popup stops a stream the card started (`stop`, else camera.turn_off).
  *
  * Qibla: in the sun mode of the dock the card asks the page for its qibla compass ({gf: "compass", value:
  * true}; false in the other modes), drawn by the page bottom right.
@@ -86,6 +97,14 @@
  *           name: Bebek
  *           humidity: sensor.bebek_sensor_humidity   # optional: the room's humidity in the dock
  *           tap_action: {action: more-info}
+ *         kapi_kamera:                # a camera: a camera of the camera mode
+ *           entity: camera.doorbell
+ *           name: Kapı
+ *           motion: binary_sensor.doorbell_motion_detected   # optional: motion in the dock
+ *           tap_action:               # live view popup; start / stop optional (default camera.turn_on / turn_off)
+ *             action: camera
+ *             start: eufy_security.start_p2p_livestream
+ *             stop: eufy_security.stop_p2p_livestream
  *         dolap_kapi:                 # page-only cover (no Home Assistant entity, slider: true): a tap opens /
  *           entity: none              #   closes it; its position is kept in this browser
  *           slider: true              #   (value: the first position, 0 closed by default)
@@ -102,7 +121,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.22.0";
+const CARD_VERSION = "1.23.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -112,6 +131,7 @@ const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
 const DOCK_MODES = [
   { id: "heating", icon: "mdi:radiator", title: "heating" },
   { id: "sun", icon: "mdi:weather-sunny", title: "sun" },
+  { id: "camera", icon: "mdi:cctv", title: "cameras" },
   { id: "floor", title: "next floor" },
   { id: "cut", title: "wall cut" },
 ];
@@ -139,6 +159,7 @@ const POP_CSS = `
                display:flex;align-items:center;justify-content:center}
   .head button:hover{background:rgba(127,127,127,.2)}
   .body{overflow-y:auto;padding:0 8px 8px}
+  .msg{padding:24px 12px;text-align:center;opacity:.8;font:15px Roboto,"Segoe UI",Arial,sans-serif}
 `;
 
 // icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
@@ -146,6 +167,10 @@ const floorIcon = (id) => { const m = /(\d+)/.exec(id); return m && +m[1] <= 3 ?
 
 // border colour of a climate on the page (docs/page.md), unless YAML colours it
 const CLIMATE_COLOR = "#e62823";
+// border colour of a camera ("other" on the page), unless YAML colours it
+const OTHER_COLOR = "#2ecc5a";
+// how long the live view waits for a camera to start streaming
+const STREAM_WAIT_MS = 30000;
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
 const CSS = `
@@ -245,6 +270,9 @@ class GungorsFloorCard extends HTMLElement {
         const a = e && e[w + "_action"];
         if (a && a.action === "popup" && (!a.card || typeof a.card !== "object" || !a.card.type))
           err(`${f.floor}.${id}.${w}_action: a popup needs 'card': a Lovelace card config with a type`);
+        if (a && a.action === "camera") for (const k of ["start", "stop"])
+          if (a[k] != null && !(typeof a[k] === "string" && /^\w+\.\w+$/.test(a[k])))
+            err(`${f.floor}.${id}.${w}_action.${k}: a service (domain.service)`);
       }
       for (const [id, e] of map) if (e && e.gain != null && typeof e.gain !== "number") err(`${f.floor}.${id}: gain must be a number`);
       return { floor: String(f.floor), map, fixed, local, rooms };
@@ -291,6 +319,7 @@ class GungorsFloorCard extends HTMLElement {
     this._fi = (this._fi + 1) % this._floors.length;
     this._useFloor();
     this._room = 0;
+    this._cam = 0;
     this._listSig = null;
     this._page = null;                        // until the page's "ready" for the new floor
     this._sent = {};
@@ -306,6 +335,7 @@ class GungorsFloorCard extends HTMLElement {
     if (!this._root) this._build();
     this._feed();
     this._renderList(false);
+    if (this._pop && this._pop.update) this._pop.update();
     if (this._pop && this._pop.card) this._pop.card.hass = hass;
   }
 
@@ -422,6 +452,8 @@ class GungorsFloorCard extends HTMLElement {
       else if (!hass.states[e.entity]) out.push(`${id}: ${e.entity} is not in Home Assistant (set it to none)`);
       if (e.humidity != null && (type !== "climate" || typeof e.humidity !== "string" || !hass.states[e.humidity]))
         out.push(`${id}: humidity is a sensor in Home Assistant, for a climate only (${e.humidity})`);
+      if (e.motion != null && (type !== "camera" || typeof e.motion !== "string" || !hass.states[e.motion]))
+        out.push(`${id}: motion is a binary sensor in Home Assistant, for a camera only (${e.motion})`);
     }
     for (const [id, e] of this._local) {
       const type = page.entities.get(id);
@@ -561,6 +593,9 @@ class GungorsFloorCard extends HTMLElement {
       case "popup":
         this._openPopup(act);
         break;
+      case "camera":
+        this._openCamera(act.entity || e.entity, act, act.title || e.name);
+        break;
       default:
         console.warn("gungors-floor-card: unknown action " + act.action);
     }
@@ -575,12 +610,13 @@ class GungorsFloorCard extends HTMLElement {
       <div class="head"><span></span><button title="close"><ha-icon icon="mdi:close"></ha-icon></button></div>
       <div class="body"></div></div></div>`;
     root.querySelector(".head span").textContent = act.title || "";
-    const pop = { host, card: null, onKey: (e) => { if (e.key === "Escape") this._closePopup(); } };
+    const pop = { host, card: null, onKey: (e) => { if (e.key === "Escape") this._closePopup(); }, onClose: act.onClose };
     root.querySelector("button").addEventListener("click", () => this._closePopup());
     root.querySelector(".pop").addEventListener("click", (e) => { if (e.target === e.currentTarget) this._closePopup(); });
     window.addEventListener("keydown", pop.onKey);
     document.body.appendChild(host);
     this._pop = pop;
+    if (act.camera) { this._cameraBody(pop, root.querySelector(".body"), act.camera); return; }
     try {
       const helpers = await window.loadCardHelpers();
       if (this._pop !== pop) return;                  // closed while the helpers loaded
@@ -594,22 +630,72 @@ class GungorsFloorCard extends HTMLElement {
 
   _closePopup() {
     if (!this._pop) return;
-    window.removeEventListener("keydown", this._pop.onKey);
-    this._pop.host.remove();
+    const pop = this._pop;
+    window.removeEventListener("keydown", pop.onKey);
+    clearTimeout(pop.timer);
+    pop.host.remove();
     this._pop = null;
+    if (pop.onClose) pop.onClose();
+  }
+
+  // live view of a camera: start its stream if it is not streaming, show it in a popup once it streams,
+  // stop it again when the popup closes (only a stream this card started)
+  _openCamera(entity, act, title) {
+    const st = this._hass.states[entity];
+    if (!st) return;
+    const call = (svc) => { const [d, s] = svc.split("."); this._hass.callService(d, s, { entity_id: entity }); };
+    let stop = null;
+    if (st.state !== "streaming") {
+      const onOff = (st.attributes.supported_features || 0) & 1;    // CameraEntityFeature.ON_OFF
+      const start = act.start || (onOff ? "camera.turn_on" : null);
+      if (start) {
+        call(start);
+        stop = act.stop || (onOff ? "camera.turn_off" : null);
+      }
+    }
+    this._openPopup({ title: title || st.attributes.friendly_name || entity, camera: entity,
+                      onClose: stop ? () => call(stop) : null });
+  }
+
+  // popup body of a live view: a message until the camera streams, then a picture-entity card (live)
+  _cameraBody(pop, body, entity) {
+    const msg = (t) => { body.innerHTML = `<div class="msg"></div>`; body.firstChild.textContent = t; };
+    msg("starting the stream...");
+    const show = async () => {
+      pop.update = null;
+      clearTimeout(pop.timer);
+      try {
+        const helpers = await window.loadCardHelpers();
+        if (this._pop !== pop) return;
+        pop.card = helpers.createCardElement({ type: "picture-entity", entity, camera_view: "live",
+                                               show_name: false, show_state: false, tap_action: { action: "none" } });
+        pop.card.hass = this._hass;
+        body.innerHTML = "";
+        body.appendChild(pop.card);
+      } catch (e) { msg("camera card failed: " + e.message); }
+    };
+    pop.update = () => { const s = this._hass.states[entity]; if (s && s.state === "streaming") show(); };
+    pop.timer = setTimeout(() => {
+      if (this._pop !== pop || !pop.update) return;
+      pop.update = null;
+      msg("the camera did not start streaming");
+    }, STREAM_WAIT_MS);
+    pop.update();
   }
 
   // ------------------------------------------------------------------ dock (quarter-disc control panel, bottom left)
   _buildDock() {
     const R = this._config.dock_radius, d = this._dock, H = this._page.H;
     if (!DOCK_MODES.some((m) => m.id === this._mode && m.icon)) this._mode = "heating";
-    const rb = R - 46, angles = [10, 34, 58, 82];
+    const rb = R - 46, angles = [8, 27, 46, 65, 84];
     const btns = DOCK_MODES.map((m, i) => {
       const a = angles[i] * Math.PI / 180, isFloor = m.id === "floor", isCut = m.id === "cut";
-      const single = isFloor ? this._floors.length < 2 : isCut ? this._page.cuts.length < 2 : m.id === "heating" && !this._climates().length;
+      const single = isFloor ? this._floors.length < 2 : isCut ? this._page.cuts.length < 2
+        : m.id === "heating" ? !this._climates().length : m.id === "camera" && !this._cameras().length;
       const icon = isFloor ? floorIcon(this._floor) : isCut ? CUT_ICON[this._cut] : m.icon;
       const title = isFloor ? this._floor + (single ? "" : " (next floor)") : isCut ? CUT_TITLE[this._cut]
-        : m.id === "heating" ? "heating" + (single ? ": no climates" : " (next room)") : m.title;
+        : m.id === "heating" ? "heating" + (single ? ": no climates" : " (next room)")
+        : m.id === "camera" ? "cameras" + (single ? ": none on this floor" : " (next camera)") : m.title;
       return `<button class="btn${single ? " single" : ""}" data-mode="${m.id}" title="${title}"
                 style="left:${rb * Math.cos(a) - 35}px;top:${R - rb * Math.sin(a) - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
     }).join("");
@@ -626,12 +712,17 @@ class GungorsFloorCard extends HTMLElement {
         if (n < 2) return;
         this._room = ((this._room || 0) + 1) % n;
       }
+      if (b.dataset.mode === "camera" && this._mode === "camera") {          // cameras again: the next camera
+        const n = this._cameras().length;
+        if (n < 2) return;
+        this._cam = ((this._cam || 0) + 1) % n;
+      }
       this._mode = b.dataset.mode;
       this._renderList(true);
       this._compass();
     }));
-    // the screen in the heating mode: the room's tap / hold actions, hover highlights it on the page
-    const scr = d.querySelector(".screen"), room = () => (this._mode === "heating" ? this._climate() : null);
+    // the screen in the heating / camera mode: the room's / camera's tap / hold actions, hover highlights it on the page
+    const scr = d.querySelector(".screen"), room = () => this._selected();
     let timer = null, held = false;
     scr.addEventListener("mouseenter", () => { const r = room(); if (r) this._post({ gf: "highlight", id: r.id }); });
     scr.addEventListener("mouseleave", () => { clearTimeout(timer); this._post({ gf: "highlight", id: null }); });
@@ -667,9 +758,29 @@ class GungorsFloorCard extends HTMLElement {
     return list[this._room];
   }
 
-  // the page's link line from the screen to the room shown (heating mode), else none
+  // cameras of the camera mode: the floor's page cameras mapped to Home Assistant, in the order of the YAML
+  _cameras() {
+    if (!this._page || !this._hass) return [];
+    const out = [];
+    for (const [id, e] of this._map)
+      if (e && e.selectable !== false && this._page.entities.get(id) === "camera" && this._hass.states[e.entity]) out.push({ id, e });
+    return out;
+  }
+
+  // the camera the camera mode shows now (null: the floor has none)
+  _camera() {
+    const list = this._cameras();
+    if (!list.length) return null;
+    if (!(this._cam < list.length)) this._cam = 0;
+    return list[this._cam];
+  }
+
+  // the entity the screen stands for: the room (heating mode) or the camera (camera mode), else null
+  _selected() { return this._mode === "heating" ? this._climate() : this._mode === "camera" ? this._camera() : null; }
+
+  // the page's link line from the screen to the room / camera shown, else none
   _link() {
-    const r = this._mode === "heating" ? this._climate() : null, H = this._page.H;
+    const r = this._selected(), H = this._page.H;
     const rect = [SCREEN.x, H - SCREEN.y - SCREEN.h, SCREEN.x + SCREEN.w, H - SCREEN.y];
     const msg = r ? { gf: "link", id: r.id, rect } : { gf: "link", id: null };
     const key = JSON.stringify(msg);
@@ -721,6 +832,20 @@ class GungorsFloorCard extends HTMLElement {
                   label: "mode", value: st.state + (act && act !== st.state ? "/" + act : "") },
                 { icon: "mdi:water-percent", label: "humidity", value: hum == null || !Number.isFinite(Number(hum)) ? "-" : Math.round(Number(hum)) + "%" }];
       }
+    } else if (mode === "camera") {
+      room = this._camera();
+      const n = this._cameras().length;
+      if (!room) rows = [{ icon: "mdi:cctv-off", label: "no cameras", value: "" }];
+      else {
+        const { id, e } = room, st = hass.states[e.entity], ms = e.motion && hass.states[e.motion];
+        const live = st.state === "streaming";
+        title = this._floor + " · " + (e.name || id) + (n > 1 ? " " + (this._cam + 1) + "/" + n : "");
+        rows = [{ icon: live ? "mdi:cctv" : "mdi:cctv-off", on: live, label: "state", value: st.state }];
+        if (ms) rows.push({ icon: ms.state === "on" ? "mdi:motion-sensor" : "mdi:motion-sensor-off", on: ms.state === "on",
+                            label: "motion", value: ms.state === "on" ? "yes" : "no" });
+        const act = e.tap_action && e.tap_action.action;
+        if (act && act !== "none") rows.push({ icon: "mdi:gesture-tap", label: "tap", value: act === "camera" ? "live" : act });
+      }
     } else {
       const s = hass.states[this._config.sun], a = s ? s.attributes : {};
       const t = (v) => (v && hhmm(v, this._tz())) || "-";
@@ -739,7 +864,9 @@ class GungorsFloorCard extends HTMLElement {
     d.querySelector(".screen").classList.toggle("act", !!room);
     d.querySelector(".screen").title = room ? room.e.entity : "";
     // hovered, the screen glows in the room's border colour, together with the room and its link on the page
-    if (room) d.querySelector(".screen").style.setProperty("--hc", room.e.color || (this._config.colors || {}).climate || CLIMATE_COLOR);
+    const cols = this._config.colors || {};
+    if (room) d.querySelector(".screen").style.setProperty("--hc", room.e.color
+      || (mode === "camera" ? cols.camera || cols.other || OTHER_COLOR : cols.climate || CLIMATE_COLOR));
     d.querySelector(".title").textContent = title;
     list.innerHTML = rows.map((r) => `<div class="row${r.on ? " on" : ""}">
         <ha-icon icon="${r.icon}"></ha-icon><span class="lbl">${r.label}</span><span class="val">${r.value}</span></div>`).join("");
