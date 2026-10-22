@@ -124,7 +124,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.23.1";
+const CARD_VERSION = "1.23.2";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -615,7 +615,12 @@ class GungorsFloorCard extends HTMLElement {
     root.querySelector(".head span").textContent = act.title || "";
     const pop = { host, card: null, onKey: (e) => { if (e.key === "Escape") this._closePopup(); }, onClose: act.onClose };
     root.querySelector("button").addEventListener("click", () => this._closePopup());
-    root.querySelector(".pop").addEventListener("click", (e) => { if (e.target === e.currentTarget) this._closePopup(); });
+    // a tap beside the window closes it, but only one that also started there: the click that ends the
+    // tap opening the popup (the dock's screen acts on pointerup) lands on this backdrop and must not close it
+    const back = root.querySelector(".pop");
+    let downOnBack = false;
+    back.addEventListener("pointerdown", (e) => { downOnBack = e.target === e.currentTarget; });
+    back.addEventListener("click", (e) => { if (e.target === e.currentTarget && downOnBack) this._closePopup(); downOnBack = false; });
     window.addEventListener("keydown", pop.onKey);
     document.body.appendChild(host);
     this._pop = pop;
