@@ -36,7 +36,8 @@
  * binary sensor, optional); a tap / hold on the screen runs the camera's tap_action / hold_action, hovered
  * it glows with the camera and its link line on the page (as in the heating mode).
  * Live view: `action: camera` (tap_action or hold_action of a camera) opens a popup with the camera's live
- * stream (a picture-entity card, camera_view live). If the camera is not streaming, the card first starts
+ * picture: once the camera streams and gives a real frame (camera_proxy), that frame, then its MJPEG stream
+ * (camera_proxy_stream; Home Assistant's HLS player stayed blank when opened before the stream was up). If the camera is not streaming, the card first starts
  * it: `start` (a service, called with the camera's entity_id; e.g. eufy_security.start_p2p_livestream),
  * else camera.turn_on when the camera supports it; the picture shows once the camera is `streaming`
  * (up to 45 s). A start that fails is tried once more (a sleeping battery camera may miss the first one);
@@ -124,7 +125,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.23.2";
+const CARD_VERSION = "1.24.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -163,6 +164,7 @@ const POP_CSS = `
   .head button:hover{background:rgba(127,127,127,.2)}
   .body{overflow-y:auto;padding:0 8px 8px}
   .msg{padding:24px 12px;text-align:center;opacity:.8;font:15px Roboto,"Segoe UI",Arial,sans-serif}
+  .cam{display:block;width:100%;height:auto;border-radius:8px;background:#000}
 `;
 
 // icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
@@ -679,18 +681,50 @@ class GungorsFloorCard extends HTMLElement {
   _cameraBody(pop, body, entity) {
     const msg = (t) => { body.innerHTML = `<div class="msg"></div>`; body.firstChild.textContent = t; };
     msg("starting the stream...");
+    // camera_proxy / camera_proxy_stream of the camera, with its access token (it changes every few minutes)
+    const api = (path) => {
+      const s = this._hass.states[entity], m = s && /[?&]token=([^&]+)/.exec(s.attributes.entity_picture || "");
+      const u = `/api/${path}/${entity}` + (m ? "?token=" + m[1] : "");
+      return this._hass.hassUrl ? this._hass.hassUrl(u) : u;
+    };
+    // The picture is an MJPEG stream (camera_proxy_stream), not Home Assistant's HLS player: the stream
+    // reaches the camera's video server (Eufy: go2rtc) only seconds after the camera turns "streaming", and a
+    // player opened before that stays blank. So first wait for a real frame (a JPEG from camera_proxy; a
+    // Eufy camera that is not streaming gives an encrypted thumbnail), show it, then switch to the stream.
     const show = async () => {
       pop.update = null;
       clearTimeout(pop.timer);
-      try {
-        const helpers = await window.loadCardHelpers();
-        if (this._pop !== pop) return;
-        pop.card = helpers.createCardElement({ type: "picture-entity", entity, camera_view: "live",
-                                               show_name: false, show_state: false, tap_action: { action: "none" } });
-        pop.card.hass = this._hass;
-        body.innerHTML = "";
-        body.appendChild(pop.card);
-      } catch (e) { msg("camera card failed: " + e.message); }
+      msg("connecting to the camera...");
+      const end = Date.now() + STREAM_WAIT_MS;
+      while (this._pop === pop && Date.now() < end) {
+        const s = this._hass.states[entity];
+        if (!s || s.state !== "streaming") break;
+        try {
+          const u = api("camera_proxy");
+          const r = await fetch(u + (u.includes("?") ? "&" : "?") + "t=" + Date.now(), { cache: "no-store" });
+          if (r.ok) {
+            const blob = await r.blob(), head = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+            if (head[0] === 0xff && head[1] === 0xd8) {
+              if (this._pop !== pop) return;
+              body.innerHTML = `<img class="cam" alt="">`;
+              const img = body.firstChild, still = URL.createObjectURL(blob);
+              img.src = still;
+              // the still stays until the stream's first frame replaces it; a stream that fails (the video
+              // server not ready yet) is opened again every 2 s until the wait is over
+              const open = () => { if (this._pop === pop) img.src = api("camera_proxy_stream"); };
+              img.onerror = () => {
+                if (this._pop !== pop) return;
+                if (Date.now() < end) { img.src = still; setTimeout(open, 2000); }
+                else msg("the camera stream did not open");
+              };
+              setTimeout(open, 300);
+              return;
+            }
+          }
+        } catch (e) { /* not ready yet */ }
+        await new Promise((ok) => setTimeout(ok, 1000));
+      }
+      if (this._pop === pop) msg("no picture from the camera");
     };
     pop.update = () => { const s = this._hass.states[entity]; if (s && s.state === "streaming") show(); };
     pop.fail = (t) => { pop.update = null; clearTimeout(pop.timer); msg(t); };
