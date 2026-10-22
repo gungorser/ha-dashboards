@@ -36,8 +36,9 @@
  * binary sensor, optional); a tap / hold on the screen runs the camera's tap_action / hold_action, hovered
  * it glows with the camera and its link line on the page (as in the heating mode).
  * Live view: `action: camera` (tap_action or hold_action of a camera) opens a popup with the camera's live
- * picture: once the camera streams and gives a real frame (camera_proxy), that frame, then its MJPEG stream
- * (camera_proxy_stream; Home Assistant's HLS player stayed blank when opened before the stream was up). If the camera is not streaming, the card first starts
+ * picture: once the camera streams, its frames (camera_proxy, one after the other), switching to its MJPEG
+ * stream (camera_proxy_stream) once that draws (Home Assistant's HLS player stayed blank when opened before the
+ * video was up; a Eufy camera that is not streaming gives no JPEG). If the camera is not streaming, the card first starts
  * it: `start` (a service, called with the camera's entity_id; e.g. eufy_security.start_p2p_livestream),
  * else camera.turn_on when the camera supports it; the picture shows once the camera is `streaming`
  * (up to 45 s). A start that fails is tried once more (a sleeping battery camera may miss the first one);
@@ -125,7 +126,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.24.0";
+const CARD_VERSION = "1.24.1";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -643,6 +644,7 @@ class GungorsFloorCard extends HTMLElement {
     const pop = this._pop;
     window.removeEventListener("keydown", pop.onKey);
     clearTimeout(pop.timer);
+    if (pop.drop) pop.drop();
     pop.host.remove();
     this._pop = null;
     if (pop.onClose) pop.onClose();
@@ -677,7 +679,7 @@ class GungorsFloorCard extends HTMLElement {
     });
   }
 
-  // popup body of a live view: a message until the camera streams, then a picture-entity card (live)
+  // popup body of a live view: a message until the camera streams, then its live picture
   _cameraBody(pop, body, entity) {
     const msg = (t) => { body.innerHTML = `<div class="msg"></div>`; body.firstChild.textContent = t; };
     msg("starting the stream...");
@@ -685,46 +687,63 @@ class GungorsFloorCard extends HTMLElement {
     const api = (path) => {
       const s = this._hass.states[entity], m = s && /[?&]token=([^&]+)/.exec(s.attributes.entity_picture || "");
       const u = `/api/${path}/${entity}` + (m ? "?token=" + m[1] : "");
-      return this._hass.hassUrl ? this._hass.hassUrl(u) : u;
+      const url = this._hass.hassUrl ? this._hass.hassUrl(u) : u;
+      return url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();      // never a cached answer
     };
-    // The picture is an MJPEG stream (camera_proxy_stream), not Home Assistant's HLS player: the stream
-    // reaches the camera's video server (Eufy: go2rtc) only seconds after the camera turns "streaming", and a
-    // player opened before that stays blank. So first wait for a real frame (a JPEG from camera_proxy; a
-    // Eufy camera that is not streaming gives an encrypted thumbnail), show it, then switch to the stream.
+    // The camera's video reaches its video server (Eufy: go2rtc) only seconds after the camera turns
+    // "streaming", so Home Assistant's HLS player opened then stays blank. The picture is built from what
+    // works once the video is there instead: camera_proxy frames (a Eufy camera that is not streaming gives an
+    // encrypted thumbnail, not a JPEG), fetched one after the other. Next to them the MJPEG stream
+    // (camera_proxy_stream) is opened hidden; once it draws a frame it replaces the frames.
+    const frame = async () => {
+      const r = await fetch(api("camera_proxy"), { cache: "no-store" });
+      if (!r.ok) return null;
+      const blob = await r.blob(), head = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+      return head[0] === 0xff && head[1] === 0xd8 ? blob : null;
+    };
+    const streaming = () => { const s = this._hass.states[entity]; return !!s && s.state === "streaming"; };
+    const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
     const show = async () => {
       pop.update = null;
       clearTimeout(pop.timer);
       msg("connecting to the camera...");
       const end = Date.now() + STREAM_WAIT_MS;
-      while (this._pop === pop && Date.now() < end) {
-        const s = this._hass.states[entity];
-        if (!s || s.state !== "streaming") break;
-        try {
-          const u = api("camera_proxy");
-          const r = await fetch(u + (u.includes("?") ? "&" : "?") + "t=" + Date.now(), { cache: "no-store" });
-          if (r.ok) {
-            const blob = await r.blob(), head = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
-            if (head[0] === 0xff && head[1] === 0xd8) {
-              if (this._pop !== pop) return;
-              body.innerHTML = `<img class="cam" alt="">`;
-              const img = body.firstChild, still = URL.createObjectURL(blob);
-              img.src = still;
-              // the still stays until the stream's first frame replaces it; a stream that fails (the video
-              // server not ready yet) is opened again every 2 s until the wait is over
-              const open = () => { if (this._pop === pop) img.src = api("camera_proxy_stream"); };
-              img.onerror = () => {
-                if (this._pop !== pop) return;
-                if (Date.now() < end) { img.src = still; setTimeout(open, 2000); }
-                else msg("the camera stream did not open");
-              };
-              setTimeout(open, 300);
-              return;
-            }
-          }
-        } catch (e) { /* not ready yet */ }
-        await new Promise((ok) => setTimeout(ok, 1000));
+      let blob = null;
+      while (this._pop === pop && streaming() && Date.now() < end && !blob) {
+        try { blob = await frame(); } catch (e) { /* not ready yet */ }
+        if (!blob) await sleep(1000);
       }
-      if (this._pop === pop) msg("no picture from the camera");
+      if (this._pop !== pop) return;
+      if (!blob) { msg(streaming() ? "no picture from the camera" : "the camera stopped streaming"); return; }
+      body.innerHTML = `<img class="cam" alt=""><img class="cam" alt="" hidden>`;
+      const [still, live] = body.querySelectorAll("img");
+      let url = URL.createObjectURL(blob), isLive = false;
+      still.src = url;
+      pop.drop = () => { live.removeAttribute("src"); URL.revokeObjectURL(url); };
+      // MJPEG: an <img> fires no load event per frame, so watch for its first frame (naturalWidth)
+      let tries = 0;
+      const open = () => {
+        if (this._pop !== pop || isLive || ++tries > 5) return;
+        live.src = api("camera_proxy_stream");
+        const t0 = Date.now(), seen = () => {
+          if (this._pop !== pop || isLive) return;
+          if (live.naturalWidth > 0) { isLive = true; live.hidden = false; still.remove(); return; }
+          if (Date.now() - t0 < 8000) setTimeout(seen, 250);
+          else { live.removeAttribute("src"); setTimeout(open, 1000); }
+        };
+        seen();
+      };
+      live.onerror = () => { if (this._pop === pop && !isLive) { live.removeAttribute("src"); setTimeout(open, 2000); } };
+      open();
+      // frames until the stream draws, or the camera stops streaming
+      while (this._pop === pop && !isLive && streaming()) {
+        let next = null;
+        try { next = await frame(); } catch (e) { /* skip this frame */ }
+        if (this._pop !== pop || isLive) break;
+        if (next) { URL.revokeObjectURL(url); url = URL.createObjectURL(next); still.src = url; }
+        else await sleep(1000);
+      }
+      if (this._pop === pop && !isLive && !streaming()) msg("the camera stopped streaming");
     };
     pop.update = () => { const s = this._hass.states[entity]; if (s && s.state === "streaming") show(); };
     pop.fail = (t) => { pop.update = null; clearTimeout(pop.timer); msg(t); };
