@@ -51,6 +51,12 @@
  * each to the page ({gf: "show", id, value: true|false}) with its other inputs, again when the entity
  * changes. A part left out of `show` keeps the render's default.
  *
+ * Vacuum map: per floor `vacuum_map` (YAML), the map camera of a robot vacuum (Dreame / Xiaomi, e.g.
+ * camera.xiaomi_robot_vacuum_x20_map). The card sends its picture to the page ({gf: "vacuum", src: the camera's
+ * entity_picture, calib: its calibration_points, trim: the no-go zones in robot mm}), again whenever the map
+ * changes; the page lays it on the floor under the furniture and walls, at `vacuum_opacity` (0-1, optional). Trimmed: the map's rooms named
+ * "No go ..." (their x0 y0 x1 y1 box) and its no_go_areas. Unavailable: {gf: "vacuum", src: null}.
+ *
  * Qibla: in the sun mode of the dock the card asks the page for its qibla compass ({gf: "compass", value:
  * true}; false in the other modes), drawn by the page bottom right.
  *
@@ -83,6 +89,9 @@
  *         araba: input_boolean.floorplan_araba   # araba: the car on the driveway: true / false, or an
  *                                     #   entity (shown while it is "on", e.g. an input_boolean on a
  *                                     #   settings view); left out of this map: the render's default (shown)
+ *       vacuum_map: camera.xiaomi_robot_vacuum_x20_map   # optional: a robot vacuum's map camera, laid on
+ *                                     #   the floor under its furniture (no-go zones trimmed)
+ *       vacuum_opacity: 0.6           # optional: the map's opacity 0-1 (default: the page's, 0.6)
  *       entities:                     # page entity -> Home Assistant entity (same domain as its type)
  *         salon_light:
  *           entity: light.salon_light
@@ -135,7 +144,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.25.0";
+const CARD_VERSION = "1.26.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -295,7 +304,12 @@ class GungorsFloorCard extends HTMLElement {
       for (const [d, v] of Object.entries(show))
         if (typeof v !== "boolean" && !(typeof v === "string" && /^\w+\.\w+$/.test(v)))
           err(`${f.floor}.show.${d}: true, false or an entity (shown while it is on)`);
-      return { floor: String(f.floor), map, fixed, local, rooms, show };
+      if (f.vacuum_map != null && !(typeof f.vacuum_map === "string" && f.vacuum_map.startsWith("camera.")))
+        err(`${f.floor}.vacuum_map: a camera entity (the vacuum's map)`);
+      if (f.vacuum_opacity != null && !(typeof f.vacuum_opacity === "number" && f.vacuum_opacity >= 0 && f.vacuum_opacity <= 1))
+        err(`${f.floor}.vacuum_opacity: a number 0-1`);
+      return { floor: String(f.floor), map, fixed, local, rooms, show, vacuum: f.vacuum_map || null,
+               vacuumOpacity: f.vacuum_opacity != null ? f.vacuum_opacity : null };
     });
     const colors = config.colors == null ? {} : config.colors;
     if (typeof colors !== "object" || Array.isArray(colors)) err("'colors' must be a map: page entity type (or other) -> \"#rrggbb\"");
@@ -322,6 +336,8 @@ class GungorsFloorCard extends HTMLElement {
     this._local = f.local;
     this._rooms = f.rooms;
     this._show = f.show;
+    this._vacuum = f.vacuum;
+    this._vacuumOpacity = f.vacuumOpacity;
   }
 
   // next wall cut of the floor's renders (the page's "ready" cuts); kept in this browser
@@ -452,6 +468,7 @@ class GungorsFloorCard extends HTMLElement {
     if (!hass.states[this._config.sun]) out.push(`sun: ${this._config.sun} is not in Home Assistant`);
     for (const [d, v] of Object.entries(this._show || {}))
       if (typeof v === "string" && !hass.states[v]) out.push(`show.${d}: ${v} is not in Home Assistant`);
+    if (this._vacuum && !hass.states[this._vacuum]) out.push(`vacuum_map: ${this._vacuum} is not in Home Assistant`);
     for (const [id, e] of this._map) {
       const type = page.entities.get(id);
       if (!type) { out.push(`${id}: not an entity of the ${this._floor} page`); continue; }
@@ -521,6 +538,7 @@ class GungorsFloorCard extends HTMLElement {
     if (Object.keys(light).length) send("settings", { gf: "settings", value: light });
     for (const [d, v] of Object.entries(this._show || {}))   // decor: fixed, or while its entity is on
       send("show:" + d, { gf: "show", id: d, value: typeof v === "boolean" ? v : this._hass.states[v].state === "on" });
+    if (this._vacuum) send("vacuum", this._vacuumMsg(this._hass.states[this._vacuum]));
     for (const [id, e] of this._map) {
       if (!e) {                                       // none: its fixed value (if any), then background
         if (this._fixed.has(id)) send("value:" + id, { gf: "set", id, value: this._fixed.get(id) });
@@ -548,6 +566,22 @@ class GungorsFloorCard extends HTMLElement {
     }
     if (!this._fed) { this._fed = true; this._post({ gf: "fed" }); }   // first inputs are in: the page may show itself
     this._clock();
+  }
+
+  // the vacuum's map for the page: its picture, robot mm <-> map px, the no-go zones (robot mm) to cut out
+  _vacuumMsg(st) {
+    const a = st.attributes || {}, cal = a.calibration_points;
+    if (st.state === "unavailable" || !a.entity_picture || !Array.isArray(cal) || cal.length !== 3) return { gf: "vacuum", src: null };
+    const trim = [];
+    for (const r of Object.values(a.rooms || {}))
+      if (r && /^no ?go/i.test(String(r.custom_name || r.name || "")) && [r.x0, r.y0, r.x1, r.y1].every(Number.isFinite))
+        trim.push([[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]]);
+    for (const z of a.no_go_areas || [])
+      if (z && [z.x0, z.y0, z.x1, z.y1, z.x2, z.y2, z.x3, z.y3].every(Number.isFinite))
+        trim.push([[z.x0, z.y0], [z.x1, z.y1], [z.x2, z.y2], [z.x3, z.y3]]);
+    const msg = { gf: "vacuum", src: a.entity_picture, calib: cal.map((c) => ({ vacuum: c.vacuum, map: c.map })), trim };
+    if (this._vacuumOpacity != null) msg.opacity = this._vacuumOpacity;
+    return msg;
   }
 
   // page-only cover: last position set in this browser, else its YAML value, else closed
