@@ -47,8 +47,9 @@
  * (Eufy with RTSP on) needs start_rtsp_livestream / stop_rtsp_livestream, not the P2P ones.
  *
  * Decor: per floor `show` (YAML) shows or leaves out the decor parts of the floor's render (kat0 araba: the
- * car on the driveway); the card sends each to the page ({gf: "show", id, value: true|false}) with its
- * other inputs. A part left out of `show` keeps the render's default.
+ * car on the driveway), fixed (true / false) or following an entity (shown while it is "on"); the card sends
+ * each to the page ({gf: "show", id, value: true|false}) with its other inputs, again when the entity
+ * changes. A part left out of `show` keeps the render's default.
  *
  * Qibla: in the sun mode of the dock the card asks the page for its qibla compass ({gf: "compass", value:
  * true}; false in the other modes), drawn by the page bottom right.
@@ -78,9 +79,10 @@
  *           covers: 2                 #   "other": what is in no room (rooms without covers, the outside),
  *         koridor0: {sun: 0.7, covers: 1.4}   #   default + its sun (3 if left out)
  *         other: {sun: 3}
- *       show:                         # optional: decor of the floor's render shown (true) or left out
- *         araba: true                 #   (false), e.g. kat0 araba: the car on the driveway; left out of
- *                                     #   this map: the render's default (shown)
+ *       show:                         # optional: decor of the floor's render shown or left out, e.g. kat0
+ *         araba: input_boolean.floorplan_araba   # araba: the car on the driveway: true / false, or an
+ *                                     #   entity (shown while it is "on", e.g. an input_boolean on a
+ *                                     #   settings view); left out of this map: the render's default (shown)
  *       entities:                     # page entity -> Home Assistant entity (same domain as its type)
  *         salon_light:
  *           entity: light.salon_light
@@ -290,7 +292,9 @@ class GungorsFloorCard extends HTMLElement {
       for (const [id, e] of map) if (e && e.gain != null && typeof e.gain !== "number") err(`${f.floor}.${id}: gain must be a number`);
       const show = f.show == null ? {} : f.show;
       if (typeof show !== "object" || Array.isArray(show)) err(`${f.floor}: 'show' must be a map: decor -> true / false`);
-      for (const [d, v] of Object.entries(show)) if (typeof v !== "boolean") err(`${f.floor}.show.${d}: true or false`);
+      for (const [d, v] of Object.entries(show))
+        if (typeof v !== "boolean" && !(typeof v === "string" && /^\w+\.\w+$/.test(v)))
+          err(`${f.floor}.show.${d}: true, false or an entity (shown while it is on)`);
       return { floor: String(f.floor), map, fixed, local, rooms, show };
     });
     const colors = config.colors == null ? {} : config.colors;
@@ -446,6 +450,8 @@ class GungorsFloorCard extends HTMLElement {
   _errors() {
     const out = [], hass = this._hass, page = this._page;
     if (!hass.states[this._config.sun]) out.push(`sun: ${this._config.sun} is not in Home Assistant`);
+    for (const [d, v] of Object.entries(this._show || {}))
+      if (typeof v === "string" && !hass.states[v]) out.push(`show.${d}: ${v} is not in Home Assistant`);
     for (const [id, e] of this._map) {
       const type = page.entities.get(id);
       if (!type) { out.push(`${id}: not an entity of the ${this._floor} page`); continue; }
@@ -513,7 +519,8 @@ class GungorsFloorCard extends HTMLElement {
     for (const [id, e] of this._map) if (e && e.gain != null) gain[id] = e.gain;
     if (Object.keys(gain).length) light.gain = gain;
     if (Object.keys(light).length) send("settings", { gf: "settings", value: light });
-    for (const [d, v] of Object.entries(this._show || {})) send("show:" + d, { gf: "show", id: d, value: v });   // decor
+    for (const [d, v] of Object.entries(this._show || {}))   // decor: fixed, or while its entity is on
+      send("show:" + d, { gf: "show", id: d, value: typeof v === "boolean" ? v : this._hass.states[v].state === "on" });
     for (const [id, e] of this._map) {
       if (!e) {                                       // none: its fixed value (if any), then background
         if (this._fixed.has(id)) send("value:" + id, { gf: "set", id, value: this._fixed.get(id) });
