@@ -54,7 +54,7 @@
  * Vacuum map: per floor `vacuum_map` (YAML), the map camera of a robot vacuum (Dreame / Xiaomi, e.g.
  * camera.xiaomi_robot_vacuum_x20_map). The card sends its picture to the page ({gf: "vacuum", src: the camera's
  * entity_picture, calib: its calibration_points, trim: the no-go zones in robot mm}), again whenever the map
- * changes; the page lays it on the floor under the furniture and walls. Trimmed: the map's rooms named
+ * changes; the page lays it on the floor under the furniture and walls, at `vacuum_opacity` (0-1, optional). Trimmed: the map's rooms named
  * "No go ..." (their x0 y0 x1 y1 box) and its no_go_areas. Unavailable: {gf: "vacuum", src: null}.
  *
  * Qibla: in the sun mode of the dock the card asks the page for its qibla compass ({gf: "compass", value:
@@ -91,6 +91,7 @@
  *                                     #   settings view); left out of this map: the render's default (shown)
  *       vacuum_map: camera.xiaomi_robot_vacuum_x20_map   # optional: a robot vacuum's map camera, laid on
  *                                     #   the floor under its furniture (no-go zones trimmed)
+ *       vacuum_opacity: 0.6           # optional: the map's opacity 0-1 (default: the page's, 0.6)
  *       entities:                     # page entity -> Home Assistant entity (same domain as its type)
  *         salon_light:
  *           entity: light.salon_light
@@ -305,7 +306,10 @@ class GungorsFloorCard extends HTMLElement {
           err(`${f.floor}.show.${d}: true, false or an entity (shown while it is on)`);
       if (f.vacuum_map != null && !(typeof f.vacuum_map === "string" && f.vacuum_map.startsWith("camera.")))
         err(`${f.floor}.vacuum_map: a camera entity (the vacuum's map)`);
-      return { floor: String(f.floor), map, fixed, local, rooms, show, vacuum: f.vacuum_map || null };
+      if (f.vacuum_opacity != null && !(typeof f.vacuum_opacity === "number" && f.vacuum_opacity >= 0 && f.vacuum_opacity <= 1))
+        err(`${f.floor}.vacuum_opacity: a number 0-1`);
+      return { floor: String(f.floor), map, fixed, local, rooms, show, vacuum: f.vacuum_map || null,
+               vacuumOpacity: f.vacuum_opacity != null ? f.vacuum_opacity : null };
     });
     const colors = config.colors == null ? {} : config.colors;
     if (typeof colors !== "object" || Array.isArray(colors)) err("'colors' must be a map: page entity type (or other) -> \"#rrggbb\"");
@@ -333,6 +337,7 @@ class GungorsFloorCard extends HTMLElement {
     this._rooms = f.rooms;
     this._show = f.show;
     this._vacuum = f.vacuum;
+    this._vacuumOpacity = f.vacuumOpacity;
   }
 
   // next wall cut of the floor's renders (the page's "ready" cuts); kept in this browser
@@ -574,7 +579,9 @@ class GungorsFloorCard extends HTMLElement {
     for (const z of a.no_go_areas || [])
       if (z && [z.x0, z.y0, z.x1, z.y1, z.x2, z.y2, z.x3, z.y3].every(Number.isFinite))
         trim.push([[z.x0, z.y0], [z.x1, z.y1], [z.x2, z.y2], [z.x3, z.y3]]);
-    return { gf: "vacuum", src: a.entity_picture, calib: cal.map((c) => ({ vacuum: c.vacuum, map: c.map })), trim };
+    const msg = { gf: "vacuum", src: a.entity_picture, calib: cal.map((c) => ({ vacuum: c.vacuum, map: c.map })), trim };
+    if (this._vacuumOpacity != null) msg.opacity = this._vacuumOpacity;
+    return msg;
   }
 
   // page-only cover: last position set in this browser, else its YAML value, else closed
