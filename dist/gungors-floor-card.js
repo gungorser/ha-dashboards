@@ -96,7 +96,8 @@
  *                                     #   settings view); left out of this map: the render's default (shown)
  *       vacuum_map: camera.xiaomi_robot_vacuum_x20_map   # optional: a robot vacuum's map camera, laid on
  *                                     #   the floor under its furniture (no-go zones trimmed)
- *       vacuum_opacity: 0.6           # optional: the map's opacity 0-1 (default: the page's, 0.6)
+ *       vacuum_opacity: 0.6           # optional: the map's opacity 0-1 (default: the page's, 0.6), or an
+ *                                     #   entity whose state sets it live (e.g. an input_number 0-100 %)
  *       entities:                     # page entity -> Home Assistant entity (same domain as its type)
  *         salon_light:
  *           entity: light.salon_light
@@ -149,7 +150,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.27.0";
+const CARD_VERSION = "1.28.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -312,8 +313,9 @@ class GungorsFloorCard extends HTMLElement {
           err(`${f.floor}.show.${d}: true, false or an entity (shown while it is on)`);
       if (f.vacuum_map != null && !(typeof f.vacuum_map === "string" && f.vacuum_map.startsWith("camera.")))
         err(`${f.floor}.vacuum_map: a camera entity (the vacuum's map)`);
-      if (f.vacuum_opacity != null && !(typeof f.vacuum_opacity === "number" && f.vacuum_opacity >= 0 && f.vacuum_opacity <= 1))
-        err(`${f.floor}.vacuum_opacity: a number 0-1`);
+      if (f.vacuum_opacity != null && !(typeof f.vacuum_opacity === "number" && f.vacuum_opacity >= 0 && f.vacuum_opacity <= 1)
+          && !(typeof f.vacuum_opacity === "string" && /^\w+\.\w+$/.test(f.vacuum_opacity)))
+        err(`${f.floor}.vacuum_opacity: a number 0-1 or an entity (e.g. an input_number 0-100 %)`);
       return { floor: String(f.floor), map, fixed, local, rooms, show, vacuum: f.vacuum_map || null,
                vacuumOpacity: f.vacuum_opacity != null ? f.vacuum_opacity : null };
     });
@@ -587,8 +589,19 @@ class GungorsFloorCard extends HTMLElement {
       if (z && [z.x0, z.y0, z.x1, z.y1, z.x2, z.y2, z.x3, z.y3].every(Number.isFinite))
         trim.push([[z.x0, z.y0], [z.x1, z.y1], [z.x2, z.y2], [z.x3, z.y3]]);
     const msg = { gf: "vacuum", src: a.entity_picture, calib: cal.map((c) => ({ vacuum: c.vacuum, map: c.map })), trim };
-    if (this._vacuumOpacity != null) msg.opacity = this._vacuumOpacity;
+    const op = this._opacity();
+    if (op != null) msg.opacity = op;
     return msg;
+  }
+
+  // the vacuum map's opacity 0-1: a number, or an entity's state (a % unit or a value over 1: 0-100)
+  _opacity() {
+    const o = this._vacuumOpacity;
+    if (typeof o !== "string") return o;
+    const st = this._hass.states[o], v = st ? parseFloat(st.state) : NaN;
+    if (!Number.isFinite(v)) return null;
+    const pct = (st.attributes || {}).unit_of_measurement === "%" || v > 1;
+    return Math.min(1, Math.max(0, pct ? v / 100 : v));
   }
 
   // page-only cover: last position set in this browser, else its YAML value, else closed
