@@ -173,7 +173,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.37.0";
+const CARD_VERSION = "1.38.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -234,7 +234,7 @@ const STREAM_WAIT_MS = 45000;
 // the dock, bottom left: three straight edges, a horizontal top (DOCK.top px long, the floor button), a slanted
 // edge along the render's world Y axis (slope 0.707 as model.json camera y = [-24.27, -17.16] shows it; the mode
 // buttons) and a vertical right edge (DOCK.side px long, the wall cut button). Its height is dock_radius.
-const DOCK = { top: 220, side: 150, slope: Math.SQRT1_2 };
+const DOCK = { top: 120, side: 120, slope: Math.SQRT1_2, gap: 80 };
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
@@ -1018,7 +1018,7 @@ class GungorsFloorCard extends HTMLElement {
     const R = this._config.dock_radius, dy = R - DOCK.side, dx = dy / DOCK.slope, W = Math.round(DOCK.top + dx);
     const L = Math.hypot(dx, dy), u = [dx / L, dy / L], n = [-u[1], u[0]], at = {};
     ["vacuum", "camera", "sun", "heating"].forEach((id, k) => {   // evenly along the slanted edge, centred on it
-      const t = (k + 0.6) / 4.5 * L;                              // clear of the corners' buttons
+      const t = L / 2 + (k - 1.5) * DOCK.gap;                     // a group in the middle of the edge
       at[id] = [DOCK.top + u[0] * t + n[0] * 46, u[1] * t + n[1] * 46];
     });
     at.floor = [DOCK.top / 2, 46];                                // the middle of the top edge
