@@ -1532,7 +1532,7 @@ class GungorsFloorCard extends HTMLElement {
     const d = this._dock, list = d.querySelector(".list");
     if (!list || !this._hass || !this._page) return;
     const mode = this._mode, hass = this._hass;
-    let rows = [], title = this._floor + " · " + DOCK_MODES.find((m) => m.id === mode).title, room = null;
+    let rows = [], title = DOCK_MODES.find((m) => m.id === mode).title, room = null;
     if (mode === "heating") {
       room = this._climate();
       const n = this._climates().length;
@@ -1544,7 +1544,7 @@ class GungorsFloorCard extends HTMLElement {
         const hum = hs && Number.isFinite(Number(hs.state)) ? Number(hs.state) : a.current_humidity;
         const on = st.state !== "off" && st.state !== "unavailable" && st.state !== "unknown";
         const act = a.hvac_action || (on ? "-" : "");
-        title = this._floor + " · " + (e.name || id.replace(/_climate$/, "")) + (n > 1 ? " " + (this._room + 1) + "/" + n : "");
+        title = (e.name || id.replace(/_climate$/, "")) + (n > 1 ? " " + (this._room + 1) + "/" + n : "");
         rows = [{ icon: "mdi:thermometer", label: "current", value: t(a.current_temperature) },
                 { icon: "mdi:target", label: "target", value: on ? t(a.temperature) : "-" },
                 { icon: act === "heating" ? "mdi:fire" : on ? "mdi:radiator" : "mdi:radiator-off", on: act === "heating",
@@ -1558,7 +1558,7 @@ class GungorsFloorCard extends HTMLElement {
       else {
         const { id, e } = room, st = hass.states[e.entity], ms = e.motion && hass.states[e.motion];
         const live = st.state === "streaming";
-        title = this._floor + " · " + (e.name || id) + (n > 1 ? " " + (this._cam + 1) + "/" + n : "");
+        title = (e.name || id) + (n > 1 ? " " + (this._cam + 1) + "/" + n : "");
         rows = [{ icon: live ? "mdi:cctv" : "mdi:cctv-off", on: live, label: "state", value: st.state }];
         if (ms) rows.push({ icon: ms.state === "on" ? "mdi:motion-sensor" : "mdi:motion-sensor-off", on: ms.state === "on",
                             label: "motion", value: ms.state === "on" ? "yes" : "no" });
@@ -1573,7 +1573,7 @@ class GungorsFloorCard extends HTMLElement {
         const { id, e } = room, st = hass.states[e.entity], a = st.attributes;
         const busy = st.state === "cleaning" || st.state === "returning";
         const area = a["vacuum_extend.cleaning_area"];
-        title = this._floor + " · " + (e.name || id) + (n > 1 ? " " + (this._vac + 1) + "/" + n : "");
+        title = (e.name || id) + (n > 1 ? " " + (this._vac + 1) + "/" + n : "");
         rows = [{ icon: busy ? "mdi:robot-vacuum" : "mdi:robot-vacuum-off", on: busy, label: "state", value: st.state },
                 { icon: "mdi:information-outline", label: "status", value: a["vacuum.status_desc"] || a.status || "-" },
                 { icon: "mdi:battery", label: "battery", value: a.battery_level != null ? a.battery_level + "%" : "-" },
