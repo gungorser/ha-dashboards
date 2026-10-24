@@ -105,6 +105,8 @@
  *     - /local/family/sercan.svg      #   along the render's axes): left, middle, top; each image made for its
  *     - /local/family/oglum.svg       #   cell's box (FAM / famGeo); hidden in the sun mode (the compass is there)
  *     - /local/family/melike.svg
+ *     # an entry can also be {image: path, tap_action: {...}}: a tap on that portrait runs the action
+ *     # (the actions of the entities, e.g. perform-action script.telefon_caldir to ring that person's phone)
  *   cut: front                        # optional: wall cut shown first: none, front (default: the outer walls
  *                                     #   facing the camera cut down) or all (every wall cut down)
  *   lighting:                         # optional: brightness of the house's world light (the page's
@@ -181,7 +183,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.41.0";
+const CARD_VERSION = "1.42.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -368,7 +370,9 @@ const CSS = `${SIDE_CSS}
   .fam.off{display:none}
   .fam .fc{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;background:linear-gradient(#0d3b85,#071d45)}
   .fam img{position:absolute;display:block}
-  .fam svg{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;filter:drop-shadow(0 0 10px rgba(90,180,255,.6))}
+  .fam .fc.act{pointer-events:auto;cursor:pointer}
+  .fam .fc.ring img{opacity:.55;-webkit-transition:opacity .15s;transition:opacity .15s}
+  .fam svg{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;filter:drop-shadow(0 0 10px rgba(90,180,255,.6))}
   .fam polyline{fill:none;stroke:#a8dcff;stroke-width:4;stroke-linejoin:round}
   .fam path{fill:none;stroke:rgba(168,220,255,.8);stroke-width:3}
   .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
@@ -468,8 +472,9 @@ class GungorsFloorCard extends HTMLElement {
       err("'lighting' must be {default: a number}");
     if (config.cut != null && !CUTS.includes(config.cut)) err("'cut' must be none, front or all");
     if (config.family != null && (!Array.isArray(config.family) || config.family.length > 3
-        || config.family.some((f) => typeof (f && typeof f === "object" ? f.image : f) !== "string")))
-      err("'family' must be a list of up to 3 images (left, middle, top): a path or {image: path}");
+        || config.family.some((f) => typeof (f && typeof f === "object" ? f.image : f) !== "string"
+          || (f && typeof f === "object" && f.tap_action != null && typeof f.tap_action !== "object"))))
+      err("'family' must be a list of up to 3 images (left, middle, top): a path or {image: path, tap_action}");
     this._config = { base: "/local/gungors_floor/", dock_radius: 370, cut: "front", ...config };
     if (!this._cut) this._cut = CUTS.includes(savedCut()) ? savedCut() : this._config.cut;
     if (!this._config.base.endsWith("/")) this._config.base += "/";
@@ -818,10 +823,15 @@ class GungorsFloorCard extends HTMLElement {
     const act = e[which + "_action"];
     if (!act || act.action === "none") return;
     if (navigator.vibrate) navigator.vibrate(which === "hold" ? 50 : 10);
+    this._act(act, e);
+  }
+
+  // one action of YAML (an entity's tap / hold, a family portrait's tap); e: the entity it belongs to ({} for none)
+  _act(act, e) {
     const fire = (type, detail) => this.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
     switch (act.action) {
       case "toggle":
-        this._hass.callService("homeassistant", "toggle", { entity_id: e.entity });
+        this._hass.callService("homeassistant", "toggle", { entity_id: act.entity || e.entity });
         break;
       case "more-info":
         fire("hass-more-info", { entityId: act.entity || e.entity });
@@ -1046,6 +1056,7 @@ class GungorsFloorCard extends HTMLElement {
         <svg class="sedge" viewBox="0 0 ${HUD.w} ${HUD.h}"><polyline points="${hudEdge}"/></svg>
         <span class="clock"></span><span class="date"></span><span class="title"></span></div>${this._famHtml(R)}`;
     d.querySelectorAll(".opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
+    d.querySelectorAll(".fam .fc.act").forEach((c) => c.addEventListener("click", () => this._famTap(c)));
     d.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
       const fm = b.dataset.mode;
       if (fm === "floor" || fm === "cut") {                                   // open / close its choices
@@ -1568,11 +1579,27 @@ class GungorsFloorCard extends HTMLElement {
     const cells = g.cells.map((c, i) => {
       if (!imgs[i]) return "";
       const clip = c.pts.map((q) => `${q[0].toFixed(1)}px ${q[1].toFixed(1)}px`).join(",");
-      return `<div class="fc" style="-webkit-clip-path:polygon(${clip});clip-path:polygon(${clip})"><img src="${imgs[i]}" alt=""
+      const act = this._famAct(i) ? " act" : "";
+      return `<div class="fc${act}" data-fam="${i}" style="-webkit-clip-path:polygon(${clip});clip-path:polygon(${clip})"><img src="${imgs[i]}" alt=""
                 style="${rectCss({ x: c.box.x.toFixed(1), y: c.box.y.toFixed(1), w: c.box.w.toFixed(1), h: c.box.h.toFixed(1) })}"></div>`;
     }).join("");
     return `<div class="fam${this._mode === "sun" ? " off" : ""}" style="left:${this._page.W - g.W}px;top:${R - g.H}px;width:${g.W}px;height:${g.H}px;-webkit-transform:scale(${FAM.scale});transform:scale(${FAM.scale});-webkit-transform-origin:100% 100%;transform-origin:100% 100%">${cells}
       <svg viewBox="0 0 ${g.W} ${g.H}"><polyline points="${g.edge.map(P).join(" ")}"/><path d="${g.div.map(([a, b]) => `M${P(a)}L${P(b)}`).join("")}"/></svg></div>`;
+  }
+
+  _famAct(i) {
+    const f = (this._config.family || [])[i], a = f && typeof f === "object" && f.tap_action;
+    return a && a.action && a.action !== "none" ? a : null;
+  }
+
+  // a tap on a family portrait: its tap_action; the portrait dims for a moment as feedback
+  _famTap(cell) {
+    const act = this._famAct(+cell.dataset.fam);
+    if (!act || !this._hass) return;
+    if (navigator.vibrate) navigator.vibrate(10);
+    cell.classList.add("ring");
+    setTimeout(() => cell.classList.remove("ring"), 600);
+    this._act(act, {});
   }
 
   _compass() {
