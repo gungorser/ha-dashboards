@@ -19,7 +19,7 @@
  * have arrived (the card sends {gf: "fed"} after its first full feed); the dock appears when the page
  * reports {gf: "shown"}. No tap highlight anywhere in the card (mobile would flash it on every tap).
  *
- * Dock: a quarter disc bottom left (an ellipse: a circle on the floor in the render's perspective) with the buttons heating, sun, cameras, vacuum, floor and wall cut over a screen (clock,
+ * Dock: bottom left, three straight edges (horizontal top: the floor button, opening the floors upwards; slanted along the render's axis: the modes; vertical right: the wall cut button, opening the cuts to the right) with the buttons heating, sun, cameras, vacuum, floor and wall cut over a screen (clock,
  * date and the mode's rows). Heating: the climates of the floor shown (page type climate, in the order of
  * `entities`), one room at a time; each press of the heating button (while the heating mode is on) goes on
  * to the next room (after the last, back to the first; a floor switch starts at the first). The screen shows
@@ -71,7 +71,7 @@
  * hovered ({gf: "highlight", id}). OK / Enter: a short press is its tap, a long one (HOLD_MS) its hold. Left or
  * down with nothing further that way goes into the dock (at the button of the mode shown): up / down walk its
  * buttons and its screen, OK presses them (the screen: tap / hold of the room, camera or vacuum shown, which
- * glows), right goes back to the house. Back / Esc closes a popup, else leaves the dock, else drops the pick.
+ * glows), right goes back to the house. OK on floor / cut opens its choices: up / down (floors) or left / right (cuts) walk them, OK picks, any other arrow closes. Back / Esc closes a popup, else leaves the dock, else drops the pick.
  * Side panel: the entity picked with the remote shows top right on the picture (its bottom-left corner cut
  * along the house's long axis): icon in its colour, name, floor, its state in plain words and, where it has one, a bar. A long OK moves
  * the control into the panel (its frame turns gold) instead of the hold action, for the types that have one:
@@ -95,7 +95,7 @@
  *   type: custom:gungors-floor-card
  *   base: /local/gungors_floor/       # optional
  *   sun: sun.sun                      # required
- *   dock_radius: 370                  # optional: height (page px) of the control dock in the bottom-left corner (width x sqrt 2)
+ *   dock_radius: 370                  # optional: height (page px) of the control dock in the bottom-left corner
  *   cut: front                        # optional: wall cut shown first: none, front (default: the outer walls
  *                                     #   facing the camera cut down) or all (every wall cut down)
  *   lighting:                         # optional: brightness of the house's world light (the page's
@@ -172,7 +172,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.35.0";
+const CARD_VERSION = "1.36.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -191,6 +191,9 @@ const DOCK_MODES = [
 const CUTS = ["none", "front", "all"];
 const CUT_ICON = { none: "mdi:wall", front: "mdi:box-cutter", all: "mdi:floor-plan" };
 const CUT_TITLE = { none: "walls: no cut", front: "walls: front cut", all: "walls: all cut" };
+// the remote's walk through the dock (up = next): the screen, then round the edges from the bottom right
+const DOCK_KEYS = ["screen", "cut", "heating", "sun", "camera", "vacuum", "floor"];
+const CUT_LABEL = { none: "duvar", front: "ön kesik", all: "hepsi" };
 const CUT_KEY = "gungors-floor-card.cut";
 const savedCut = () => { try { return localStorage.getItem(CUT_KEY); } catch (e) { return null; } };
 // position of a page-only cover (entity none + slider: true), kept per browser
@@ -224,24 +227,10 @@ const CLIMATE_COLOR = "#e62823";
 const OTHER_COLOR = "#2ecc5a";
 // how long the live view waits for a camera to start streaming
 const STREAM_WAIT_MS = 45000;
-// the dock is a circle on the floor seen by the render's camera (model.json camera x = [24.27, -17.16] px per
-// metre, y = [-24.27, -17.16]): an ellipse 24.27 / 17.16 = sqrt(2) times as wide as high
-const DOCK_STRETCH = Math.SQRT2;
-// n points spread evenly by arc length on the ellipse (a, b) between the parametric angles t0 and t1 (degrees)
-function ellipseSpots(a, b, t0, t1, n) {
-  const pt = (t) => [a * Math.cos(t * Math.PI / 180), b * Math.sin(t * Math.PI / 180)], len = [0];
-  for (let t = t0 + 0.5; t <= t1 + 1e-9; t += 0.5) {
-    const p = pt(t), q = pt(t - 0.5);
-    len.push(len[len.length - 1] + Math.hypot(p[0] - q[0], p[1] - q[1]));
-  }
-  const total = len[len.length - 1];
-  return Array.from({ length: n }, (_, i) => {
-    const want = total * i / (n - 1);
-    let k = 0;
-    while (k < len.length - 1 && len[k + 1] < want) k++;
-    return pt(t0 + k * 0.5);
-  });
-}
+// the dock, bottom left: three straight edges, a horizontal top (DOCK.top px long, the floor button), a slanted
+// edge along the render's world Y axis (slope 0.707 as model.json camera y = [-24.27, -17.16] shows it; the mode
+// buttons) and a vertical right edge (DOCK.side px long, the wall cut button). Its height is dock_radius.
+const DOCK = { top: 130, side: 140, slope: Math.SQRT1_2 };
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
@@ -287,13 +276,15 @@ const CSS = `${SIDE_CSS}
   .dock{position:absolute;left:0;transform-origin:0 0;font:15px "Segoe UI",Roboto,Arial,sans-serif;color:#e8f4ff;
         user-select:none;-webkit-user-select:none;pointer-events:none;visibility:hidden}
   .dock.shown{visibility:visible}
-  .disc,.gloss{position:absolute;left:0;bottom:0;box-sizing:border-box}
-  .disc{width:100%;height:100%;border-top-right-radius:100%;pointer-events:auto;
-        background:radial-gradient(ellipse farthest-corner at 0% 100%,#071d45 0 52%,#0d3b85 64%,#1d6fd6 80%,#3b95f0 89%,#0b3a86 100%);
-        border-top:4px solid #a8dcff;border-right:4px solid #a8dcff;
-        box-shadow:0 0 22px rgba(90,180,255,.55),inset 0 0 30px rgba(0,20,60,.6)}
-  .gloss{width:70%;height:70%;border-top-right-radius:100%;border-top:2px solid rgba(160,215,255,.35);
-         border-right:2px solid rgba(160,215,255,.35)}
+  .disc,.rim{position:absolute;left:0;top:0;width:100%;height:100%}
+  .disc{pointer-events:auto;
+        background:radial-gradient(ellipse farthest-corner at 0% 100%,#071d45 0 40%,#0d3b85 52%,#1d6fd6 64%,#3b95f0 70%,#0b3a86 76%)}
+  .rim{overflow:visible;pointer-events:none;filter:drop-shadow(0 0 10px rgba(90,180,255,.6))}
+  .rim polygon{fill:none;stroke:#a8dcff;stroke-width:4;stroke-linejoin:round}
+  .rim polygon.in{stroke:rgba(160,215,255,.35);stroke-width:2}
+  .btn.opt{z-index:2}
+  .btn.opt .lb{position:absolute;bottom:-17px;left:50%;transform:translateX(-50%);white-space:nowrap;font:bold 12px "Segoe UI",Roboto,Arial,sans-serif;
+               color:#e8f4ff;text-shadow:0 1px 3px #000}
   .btn{position:absolute;width:70px;height:70px;border-radius:50%;padding:0;cursor:pointer;outline:none;pointer-events:auto;
        border:3px solid #e6f5ff;color:#fff;display:flex;align-items:center;justify-content:center;
        background:radial-gradient(circle at 35% 28%,#e4f4ff 0 7%,#63b4ff 20%,#1a67d1 58%,#0a2f70 100%);
@@ -433,7 +424,13 @@ class GungorsFloorCard extends HTMLElement {
     if (!this._page) return;
     const cuts = this._page.cuts, i = cuts.indexOf(this._cut);
     if (cuts.length < 2) return;
-    this._cut = cuts[(i + 1) % cuts.length];
+    this._setCut(cuts[(i + 1) % cuts.length]);
+  }
+
+  _setCut(c) {
+    if (!this._page || c === this._cut) { this._fly = null; if (this._page) this._buildDock(); return; }
+    this._fly = null;
+    this._cut = c;
     try { localStorage.setItem(CUT_KEY, this._cut); } catch (e) { /* private mode: this session only */ }
     this._post({ gf: "cut", mode: this._cut });
     this._buildDock();                        // the button's icon (the page answers "ready" if the picture changes)
@@ -441,7 +438,14 @@ class GungorsFloorCard extends HTMLElement {
 
   _nextFloor() {
     if (this._floors.length < 2 || !this._page) return;
-    this._fi = (this._fi + 1) % this._floors.length;
+    this._setFloor((this._fi + 1) % this._floors.length);
+  }
+
+  _setFloor(i) {
+    this._fly = null;
+    if (!this._page) return;
+    if (i === this._fi) { this._buildDock(); return; }
+    this._fi = i;
     this._useFloor();
     this._room = 0;
     this._cam = 0;
@@ -925,12 +929,12 @@ class GungorsFloorCard extends HTMLElement {
 
   // ------------------------------------------------------------------ dock (quarter-disc control panel, bottom left)
   _buildDock() {
-    // a quarter of a circle lying on the floor, as the render's camera shows it: an ellipse dock_radius high and
-    // DOCK_STRETCH times as wide; the buttons sit evenly (by arc length) on a ring 46 px inside its rim
-    const R = this._config.dock_radius, A = Math.round(R * DOCK_STRETCH), d = this._dock, H = this._page.H;
+    // see DOCK: the floor button on the top edge, the cut button on the right edge, the modes along the slanted
+    // edge (heating lowest), each 46 px inside its edge; floor and cut open their choices (up / right) when pressed
+    const R = this._config.dock_radius, d = this._dock, H = this._page.H, g = this._dockGeo();
     if (!DOCK_MODES.some((m) => m.id === this._mode && m.icon)) this._mode = "heating";
-    const ra = A - 46, rb = R - 46, pos = ellipseSpots(ra, rb, 6, 86, DOCK_MODES.length);
-    const btns = DOCK_MODES.map((m, i) => {
+    const btns = DOCK_MODES.map((m) => {
+      const c = g.at[m.id];
       const isFloor = m.id === "floor", isCut = m.id === "cut";
       const single = isFloor ? this._floors.length < 2 : isCut ? this._page.cuts.length < 2
         : m.id === "heating" ? !this._climates().length : m.id === "camera" ? !this._cameras().length
@@ -941,16 +945,29 @@ class GungorsFloorCard extends HTMLElement {
         : m.id === "camera" ? "cameras" + (single ? ": none on this floor" : " (next camera)")
         : m.id === "vacuum" ? "vacuum" + (single ? ": none on this floor" : " (map)") : m.title;
       return `<button class="btn${single ? " single" : ""}" data-mode="${m.id}" title="${title}"
-                style="left:${pos[i][0] - 35}px;top:${R - pos[i][1] - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
+                style="left:${c[0] - 35}px;top:${c[1] - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
     }).join("");
-    d.style.width = A + "px"; d.style.height = R + "px";
+    const opts = this._flyOpts().map((o, i) => `<button class="btn opt${o.on ? " active" : ""}" data-opt="${i}" title="${o.title}"
+                style="left:${o.c[0] - 35}px;top:${o.c[1] - 35}px"><ha-icon icon="${o.icon}"></ha-icon><span class="lb">${o.label}</span></button>`).join("");
+    const pts = (k) => g.poly.map(([x, y]) => `${(x * k).toFixed(1)},${(R - (R - y) * k).toFixed(1)}`).join(" ");
+    d.style.width = g.W + "px"; d.style.height = R + "px";
     d.style.top = ((H - R) / H * 100) + "%";
-    d.innerHTML = `<div class="disc"></div><div class="gloss"></div>${btns}
+    const clip = g.poly.map(([x, y]) => `${x}px ${y}px`).join(",");
+    d.innerHTML = `<div class="disc" style="-webkit-clip-path:polygon(${clip});clip-path:polygon(${clip})"></div>
+      <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon class="in" points="${pts(0.7)}"/><polygon points="${pts(1)}"/></svg>${btns}${opts}
       <div class="screen"><div class="top"><span class="clock"></span><span class="date"></span></div>
         <div class="title"></div><div class="list"></div></div>`;
-    d.querySelectorAll(".btn").forEach((b) => b.addEventListener("click", () => {
-      if (b.dataset.mode === "floor") { this._nextFloor(); return; }
-      if (b.dataset.mode === "cut") { this._nextCut(); return; }
+    d.querySelectorAll(".btn.opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
+    d.querySelectorAll(".btn[data-mode]").forEach((b) => b.addEventListener("click", () => {
+      const fm = b.dataset.mode;
+      if (fm === "floor" || fm === "cut") {                                   // open / close its choices
+        if (b.classList.contains("single")) return;
+        this._fly = this._fly === fm ? null : fm;
+        this._flyI = Math.max(0, this._flyOpts().findIndex((o) => o.on));
+        this._buildDock();
+        return;
+      }
+      if (this._fly) { this._fly = null; this._buildDock(); }
       if (b.dataset.mode === "heating" && this._mode === "heating") {        // heating again: the next room
         const n = this._climates().length;
         if (n < 2) return;
@@ -992,6 +1009,35 @@ class GungorsFloorCard extends HTMLElement {
     this._keyApply();
   }
 
+  // the dock's outline (dock px, top left origin) and its buttons' centres
+  _dockGeo() {
+    const R = this._config.dock_radius, dy = R - DOCK.side, dx = dy / DOCK.slope, W = Math.round(DOCK.top + dx);
+    const L = Math.hypot(dx, dy), u = [dx / L, dy / L], n = [-u[1], u[0]], at = {};
+    ["vacuum", "camera", "sun", "heating"].forEach((id, k) => {
+      const t = (0.08 + k * 0.24) * L;
+      at[id] = [DOCK.top + u[0] * t + n[0] * 46, u[1] * t + n[1] * 46];
+    });
+    at.floor = [46, 46];
+    at.cut = [W - 46, R - 58];
+    return { W, at, poly: [[0, 0], [DOCK.top, 0], [W, dy], [W, R], [0, R]] };
+  }
+
+  // the choices of the open floor / cut button: floors upwards from the floor button, cuts rightwards from the cut button
+  _flyOpts() {
+    if (!this._fly || !this._page) return [];
+    const g = this._dockGeo();
+    if (this._fly === "floor") return this._floors.map((f, i) => ({ v: i, on: i === this._fi, icon: floorIcon(f.floor),
+      label: f.floor, title: f.floor, c: [g.at.floor[0], -62 - i * 92] }));
+    return this._page.cuts.map((c, i) => ({ v: c, on: c === this._cut, icon: CUT_ICON[c], label: CUT_LABEL[c],
+      title: CUT_TITLE[c], c: [g.W + 50 + i * 92, g.at.cut[1]] }));
+  }
+
+  _flyPick(i) {
+    const o = this._flyOpts()[i];
+    if (!o) return;
+    if (this._fly === "floor") this._setFloor(o.v); else this._setCut(o.v);
+  }
+
   // ------------------------------------------------------------------ remote (TV remote, keyboard)
   _key(ev, down) {
     if (!this.isConnected || !this._page || !this._hass) return;
@@ -1018,6 +1064,17 @@ class GungorsFloorCard extends HTMLElement {
       return;
     }
     const floorKey = k === "ChannelUp" || k === "ChannelDown" || k === "PageUp" || k === "PageDown";
+    if (!down && ok && this._kFlyUp) { ev.preventDefault(); this._kFlyUp = false; return; }   // the OK that picked a choice
+    if (down && this._fly && this._kz === "dock" && (dir || ok || back)) {   // floor / cut choices open: walk them, OK picks
+      ev.preventDefault();
+      if (ev.repeat && !dir) return;
+      const n = this._flyOpts().length, step = !dir ? 0 : this._fly === "floor" ? -dir[1] : dir[0];
+      if (ok) { this._kFlyUp = true; this._flyPick(this._flyI); }
+      else if (back || !step || this._flyI + step < 0) this._fly = null;   // back, across or before the first: closed
+      else this._flyI = Math.min(n - 1, this._flyI + step);
+      this._buildDock();
+      return;
+    }
     if (!down) {                                      // key up: only OK's, a tap unless it became a hold
       const p = this._kPress;
       if (ok && p) { ev.preventDefault(); this._kPress = null; clearTimeout(p.timer); if (!p.held) this._keyAct(p, "tap"); }
@@ -1044,8 +1101,8 @@ class GungorsFloorCard extends HTMLElement {
     }
     const nav = this._navigable();
     if (this._kz === "dock") {
-      const items = ["screen", ...DOCK_MODES.map((m) => m.id)], i = Math.max(0, items.indexOf(this._kd));
-      if (dir[1]) this._kd = items[Math.min(items.length - 1, Math.max(0, i - dir[1]))];   // up: along the arc, up
+      const items = DOCK_KEYS, i = Math.max(0, items.indexOf(this._kd));
+      if (dir[1]) this._kd = items[Math.min(items.length - 1, Math.max(0, i - dir[1]))];   // up: round the edges, up
       else if (dir[0] > 0 && nav.length) {                                                // right: back to the house
         this._kz = "house";
         if (!nav.includes(this._kid)) this._kid = this._keyNearest(nav, "corner");
@@ -1123,6 +1180,7 @@ class GungorsFloorCard extends HTMLElement {
   }
 
   _keyDrop() {
+    if (this._fly) { this._fly = null; if (this._page) this._buildDock(); }
     if (!this._kz) return;
     this._kz = null;
     this._kCtl = false;
@@ -1140,8 +1198,10 @@ class GungorsFloorCard extends HTMLElement {
     if (this._kz !== "house" || this._kCtl && !(this._sideCtl() || {}).ctl) this._kCtl = false;
     if (this._kid !== this._sideId) { this._kCtl = false; this._sideId = this._kid; this._sidePending = null; }
     this._sideRender();
-    this._dock.querySelectorAll(".btn, .screen").forEach((el) =>
-      el.classList.toggle("kf", this._kz === "dock" && (el.dataset.mode || "screen") === this._kd));
+    const fly = this._fly && this._kz === "dock";
+    this._dock.querySelectorAll(".btn[data-mode], .screen").forEach((el) =>
+      el.classList.toggle("kf", this._kz === "dock" && !fly && (el.dataset.mode || "screen") === this._kd));
+    this._dock.querySelectorAll(".btn.opt").forEach((el) => el.classList.toggle("kf", fly && +el.dataset.opt === this._flyI));
     let hl = null;
     if (this._kz === "house") hl = this._kid;
     else if (this._kz === "dock" && this._kd === "screen") { const r = this._selected(); hl = r ? r.id : null; }
