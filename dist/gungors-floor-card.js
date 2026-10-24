@@ -19,8 +19,10 @@
  * have arrived (the card sends {gf: "fed"} after its first full feed); the dock appears when the page
  * reports {gf: "shown"}. No tap highlight anywhere in the card (mobile would flash it on every tap).
  *
- * Dock: bottom left, three straight edges (horizontal top: the floor button, opening the floors upwards; slanted along the render's axis: the modes; vertical right: the wall cut button, opening the cuts to the right) with the buttons heating, sun, cameras, vacuum, floor and wall cut over a screen (clock,
- * date and the mode's rows). Heating: the climates of the floor shown (page type climate, in the order of
+ * Dock: bottom left, three straight edges: a horizontal top with the floor cell (opens the floors upwards), a slanted
+ * edge along the render's axis with the buttons heating, sun, cameras and vacuum, and a vertical right edge with the
+ * wall cut cell (opens the cuts to the right); the cells are cut off by mitres. The rest is a screen with the mode's
+ * rows, open to the picture's edges. The clock, date and place (room / camera) sit in a cell top left. Heating: the climates of the floor shown (page type climate, in the order of
  * `entities`), one room at a time; each press of the heating button (while the heating mode is on) goes on
  * to the next room (after the last, back to the first; a floor switch starts at the first). The screen shows
  * the room's name, current and target temperature, hvac mode and action, and humidity (the entity's
