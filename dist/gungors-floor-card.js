@@ -223,6 +223,8 @@ const POP_CSS = `
 `;
 
 // icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
+const floorLabel = (id) => { const m = /(\d+)/.exec(id); return m ? "Kat " + m[1] : id; };
+const rectCss = (r) => `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px`;
 const floorIcon = (id) => { const m = /(\d+)/.exec(id); return m && +m[1] <= 3 ? "mdi:home-floor-" + m[1] : "mdi:layers"; };
 
 // border colour of a climate on the page (docs/page.md), unless YAML colours it
@@ -234,7 +236,7 @@ const STREAM_WAIT_MS = 45000;
 // the dock, bottom left: three straight edges, a horizontal top (DOCK.top px long, the floor button), a slanted
 // edge along the render's world Y axis (slope 0.707 as model.json camera y = [-24.27, -17.16] shows it; the mode
 // buttons) and a vertical right edge (DOCK.side px long, the wall cut button). Its height is dock_radius.
-const DOCK = { top: 120, side: 120, slope: Math.SQRT1_2, gap: 80 };
+const DOCK = { top: 120, side: 120, slope: Math.SQRT1_2, gap: 76, cellH: 95, cellW: 100 };
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
@@ -286,9 +288,20 @@ const CSS = `${SIDE_CSS}
   .rim{overflow:visible;pointer-events:none;filter:drop-shadow(0 0 10px rgba(90,180,255,.6))}
   .rim polygon{fill:none;stroke:#a8dcff;stroke-width:4;stroke-linejoin:round}
   .rim polygon.in{stroke:rgba(160,215,255,.35);stroke-width:2}
-  .btn.opt{z-index:2}
-  .btn.opt .lb{position:absolute;bottom:-17px;left:50%;transform:translateX(-50%);white-space:nowrap;font:bold 12px "Segoe UI",Roboto,Arial,sans-serif;
-               color:#e8f4ff;text-shadow:0 1px 3px #000}
+  .rim .div{fill:none;stroke:rgba(168,220,255,.75);stroke-width:2}
+  .cell{position:absolute;box-sizing:border-box;margin:0;padding:0;border:0;border-radius:6px;background:transparent;color:#fff;
+        cursor:pointer;outline:none;pointer-events:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;
+        font:bold 13px "Segoe UI",Roboto,Arial,sans-serif;letter-spacing:.5px;text-transform:uppercase;text-shadow:0 1px 3px #000;
+        transition:background .15s,box-shadow .15s}
+  .cell ha-icon{--mdc-icon-size:38px;margin-bottom:4px;filter:drop-shadow(0 1px 1px rgba(0,0,0,.6))}
+  .cell:hover,.cell.open{background:rgba(160,215,255,.16)}
+  .cell.single{opacity:.5;cursor:default}
+  .cell.kf{background:rgba(160,215,255,.22);box-shadow:inset 0 0 0 3px #fff,0 0 18px #fff}
+  .cell.opt{z-index:2;border:2px solid #a8dcff;border-radius:8px;background:linear-gradient(#1d6fd6,#0b3a86);
+            box-shadow:0 4px 10px rgba(0,0,0,.55)}
+  .cell.opt ha-icon{--mdc-icon-size:30px;margin-bottom:2px}
+  .cell.opt.active{border-color:#ffd66b;color:#ffd66b}
+  .cell.opt.kf{box-shadow:0 0 0 3px #fff,0 0 22px #fff}
   .btn{position:absolute;width:70px;height:70px;border-radius:50%;padding:0;cursor:pointer;outline:none;pointer-events:auto;
        border:3px solid #e6f5ff;color:#fff;display:flex;align-items:center;justify-content:center;
        background:radial-gradient(circle at 35% 28%,#e4f4ff 0 7%,#63b4ff 20%,#1a67d1 58%,#0a2f70 100%);
@@ -948,24 +961,31 @@ class GungorsFloorCard extends HTMLElement {
         : m.id === "heating" ? "heating" + (single ? ": no climates" : " (next room)")
         : m.id === "camera" ? "cameras" + (single ? ": none on this floor" : " (next camera)")
         : m.id === "vacuum" ? "vacuum" + (single ? ": none on this floor" : " (map)") : m.title;
+      if (isFloor || isCut) {                                     // a cell in its corner, its choice in words
+        const r = g.cell[m.id], lb = isFloor ? floorLabel(this._floor) : CUT_LABEL[this._cut];
+        return `<button class="cell${single ? " single" : ""}${this._fly === m.id ? " open" : ""}" data-mode="${m.id}" title="${title}"
+                  style="${rectCss(r)}"><ha-icon icon="${icon}"></ha-icon><span>${lb}</span></button>`;
+      }
       return `<button class="btn${single ? " single" : ""}" data-mode="${m.id}" title="${title}"
                 style="left:${c[0] - 35}px;top:${c[1] - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
     }).join("");
-    const opts = this._flyOpts().map((o, i) => `<button class="btn opt${o.on ? " active" : ""}" data-opt="${i}" title="${o.title}"
-                style="left:${o.c[0] - 35}px;top:${o.c[1] - 35}px"><ha-icon icon="${o.icon}"></ha-icon><span class="lb">${o.label}</span></button>`).join("");
+    const opts = this._flyOpts().map((o, i) => `<button class="cell opt${o.on ? " active" : ""}" data-opt="${i}" title="${o.title}"
+                style="${rectCss(o.r)}"><ha-icon icon="${o.icon}"></ha-icon><span>${o.label}</span></button>`).join("");
+    const fc = g.cell.floor, cc = g.cell.cut;
+    const lines = `<path class="div" d="M${fc.w},0V${fc.h}H0M${cc.x + cc.w},${cc.y}H${cc.x}V${R}"/>`;
     const pts = (k) => g.poly.map(([x, y]) => `${(x * k).toFixed(1)},${(R - (R - y) * k).toFixed(1)}`).join(" ");
     d.style.width = g.W + "px"; d.style.height = R + "px";
     d.style.top = ((H - R) / H * 100) + "%";
     const clip = g.poly.map(([x, y]) => `${x}px ${y}px`).join(",");
     d.innerHTML = `<div class="disc" style="-webkit-clip-path:polygon(${clip});clip-path:polygon(${clip})"></div>
-      <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon class="in" points="${pts(0.7)}"/><polygon points="${pts(1)}"/></svg>${btns}${opts}
+      <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon class="in" points="${pts(0.7)}"/><polygon points="${pts(1)}"/>${lines}</svg>${btns}${opts}
       <div class="screen"><div class="top"><span class="clock"></span><span class="date"></span></div>
         <div class="title"></div><div class="list"></div></div>`;
-    d.querySelectorAll(".btn.opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
-    d.querySelectorAll(".btn[data-mode]").forEach((b) => b.addEventListener("click", () => {
+    d.querySelectorAll(".opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
+    d.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
       const fm = b.dataset.mode;
       if (fm === "floor" || fm === "cut") {                                   // open / close its choices
-        if (b.classList.contains("single")) return;
+        if (b.classList.contains("single")) return;   // one floor / one cut: nothing to choose
         this._fly = this._fly === fm ? null : fm;
         this._flyI = Math.max(0, this._flyOpts().findIndex((o) => o.on));
         this._buildDock();
@@ -1018,12 +1038,12 @@ class GungorsFloorCard extends HTMLElement {
     const R = this._config.dock_radius, dy = R - DOCK.side, dx = dy / DOCK.slope, W = Math.round(DOCK.top + dx);
     const L = Math.hypot(dx, dy), u = [dx / L, dy / L], n = [-u[1], u[0]], at = {};
     ["vacuum", "camera", "sun", "heating"].forEach((id, k) => {   // evenly along the slanted edge, centred on it
-      const t = L / 2 + (k - 1.5) * DOCK.gap;                     // a group in the middle of the edge
+      const t = L / 2 - 10 + (k - 1.5) * DOCK.gap;                // a group in the middle of the edge, clear of the cells
       at[id] = [DOCK.top + u[0] * t + n[0] * 46, u[1] * t + n[1] * 46];
     });
-    at.floor = [DOCK.top / 2, 46];                                // the middle of the top edge
-    at.cut = [W - 46, R - DOCK.side / 2];                         // the middle of the right edge
-    return { W, at, poly: [[0, 0], [DOCK.top, 0], [W, dy], [W, R], [0, R]] };
+    // the corner cells: floor under the top edge, cut beside the right edge, each as long as its edge
+    const cell = { floor: { x: 0, y: 0, w: DOCK.top, h: DOCK.cellH }, cut: { x: W - DOCK.cellW, y: dy, w: DOCK.cellW, h: DOCK.side } };
+    return { W, at, cell, poly: [[0, 0], [DOCK.top, 0], [W, dy], [W, R], [0, R]] };
   }
 
   // the choices of the open floor / cut button: floors upwards from the floor button, cuts rightwards from the cut button
@@ -1031,9 +1051,9 @@ class GungorsFloorCard extends HTMLElement {
     if (!this._fly || !this._page) return [];
     const g = this._dockGeo();
     if (this._fly === "floor") return this._floors.map((f, i) => ({ v: i, on: i === this._fi, icon: floorIcon(f.floor),
-      label: f.floor, title: f.floor, c: [g.at.floor[0], -62 - i * 92] }));
+      label: floorLabel(f.floor), title: f.floor, r: { x: 0, y: -(i + 1) * 62, w: DOCK.top, h: 56 } }));
     return this._page.cuts.map((c, i) => ({ v: c, on: c === this._cut, icon: CUT_ICON[c], label: CUT_LABEL[c],
-      title: CUT_TITLE[c], c: [g.W + 50 + i * 92, g.at.cut[1]] }));
+      title: CUT_TITLE[c], r: { x: g.W + 8 + i * 108, y: g.cell.cut.y, w: DOCK.cellW, h: DOCK.side } }));
   }
 
   _flyPick(i) {
@@ -1183,7 +1203,7 @@ class GungorsFloorCard extends HTMLElement {
     if (act && act.action === "more-info") return;    // Home Assistant's dialog: the remote could not close it (Fully keeps back)
     if (p.id) this._run(p.id, which);
     else {
-      const b = this._dock.querySelector(`.btn[data-mode="${p.mode}"]`);
+      const b = this._dock.querySelector(`[data-mode="${p.mode}"]`);
       if (b) b.click();
     }
     this._keyApply();
@@ -1227,9 +1247,9 @@ class GungorsFloorCard extends HTMLElement {
     if (this._kid !== this._sideId) { this._kCtl = false; this._sideId = this._kid; this._sidePending = null; }
     this._sideRender();
     const fly = this._fly && this._kz === "dock";
-    this._dock.querySelectorAll(".btn[data-mode], .screen").forEach((el) =>
+    this._dock.querySelectorAll("[data-mode], .screen").forEach((el) =>
       el.classList.toggle("kf", this._kz === "dock" && !fly && (el.dataset.mode || "screen") === this._kd));
-    this._dock.querySelectorAll(".btn.opt").forEach((el) => el.classList.toggle("kf", fly && +el.dataset.opt === this._flyI));
+    this._dock.querySelectorAll(".opt").forEach((el) => el.classList.toggle("kf", fly && +el.dataset.opt === this._flyI));
     let hl = null;
     if (this._kz === "house") hl = this._kid;
     else if (this._kz === "dock" && this._kd === "screen") { const r = this._selected(); hl = r ? r.id : null; }
