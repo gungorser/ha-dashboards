@@ -33,7 +33,7 @@
 // that range (an entity target without an area gets its own row). Each occurrence is one bar
 // from its start to its end, also across midnight; overlapping ones stack. Tap a bar to edit
 // it, a day in the week header to open that day; "Yeni" adds an entry.
-const VERSION = "1.10.1";
+const VERSION = "1.10.2";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -828,8 +828,10 @@ class GungorsProgramCard extends HTMLElement {
     const event = {
       summary: f.summary.trim() || "Program",
       description: this._programText(f),
-      dtstart: f.allDay ? sDate : span.start,
-      dtend: f.allDay ? addDays(eDate, 1) : span.end,
+      // both in UTC: Home Assistant refuses two different offsets, which a span across a
+      // daylight saving change has in house time (19:00+02:00 -> 08:00+01:00)
+      dtstart: f.allDay ? sDate : new Date(span.start).toISOString(),
+      dtend: f.allDay ? addDays(eDate, 1) : new Date(span.end).toISOString(),
     };
     if (f.mode === "daily") event.rrule = "FREQ=DAILY";
     else if (f.mode === "weekly") event.rrule = `FREQ=WEEKLY;BYDAY=${WD.map((w) => w[0]).filter((d) => f.days.includes(d)).join(",")}`;
