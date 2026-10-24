@@ -26,13 +26,14 @@
 // ones folded under "Geçmiş". A running one has pause / resume (gungors.pause_program /
 // resume_program) and stop (a timed one: the running occurrence ends now; a timeless one:
 // gungors.stop_program). A timeless program (no time of its own, e.g. "Bebek uyku", kept by
-// gungors: save_timeless_program / delete_timeless_program) starts with play and a duration
+// gungors: save_timeless_program / delete_timeless_program; "Zamansız" in the editor, which also
+// turns an entry into one and back) starts with play and a duration
 // (gungors.start_program, 24 h by default); while it runs it pauses the programs it conflicts
 // with, and they come back when it ends. Below, a timeline of the week or of one day (Hafta / Gün), one row per room with a program in
 // that range (an entity target without an area gets its own row). Each occurrence is one bar
 // from its start to its end, also across midnight; overlapping ones stack. Tap a bar to edit
 // it, a day in the week header to open that day; "Yeni" adds an entry.
-const VERSION = "1.10.0";
+const VERSION = "1.10.1";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -842,17 +843,24 @@ class GungorsProgramCard extends HTMLElement {
     if (v) { this._formError = v; this._render(); return; }
     this._busy = true; this._formError = null; this._render();
     try {
+      const ent = { entity_id: this._config.entity };
       if (f.timeless) {
         const data = { summary: f.summary.trim(), description: this._programText(f) };
-        if (f.orig) data.uid = f.orig.uid;
-        await this._hass.callService("gungors", "save_timeless_program", data, { entity_id: this._config.entity });
+        if (f.orig?.timeless) data.uid = f.orig.uid;
+        await this._hass.callService("gungors", "save_timeless_program", data, ent);
+        // a calendar entry made timeless: the entry (a whole series) goes
+        if (f.orig && !f.orig.timeless) await this._hass.callWS({ type: "calendar/event/delete", entity_id: this._config.entity, uid: f.orig.uid });
         this._busy = false;
         this._form = null;
         await this._load();
         return;
       }
       const event = this._eventPayload(f);
-      if (f.orig) {
+      if (f.orig?.timeless) {
+        // a timeless program given times: a calendar entry instead
+        await this._hass.callWS({ type: "calendar/event/create", entity_id: this._config.entity, event });
+        await this._hass.callService("gungors", "delete_timeless_program", { uid: f.orig.uid }, ent);
+      } else if (f.orig) {
         // a whole series (or a single entry) is edited in place, keeping its uid
         const msg = { type: "calendar/event/update", entity_id: this._config.entity, uid: f.orig.uid, event };
         if (!f.orig.rrule && f.orig.recurrence_id) msg.recurrence_id = f.orig.recurrence_id;
@@ -873,11 +881,11 @@ class GungorsProgramCard extends HTMLElement {
   async _delete() {
     const f = this._form;
     if (!f?.orig?.uid) return;
-    const what = f.timeless ? "Bu zamansız program" : f.mode === "none" ? "Bu program" : "Bu tekrarlı programın tüm serisi";
+    const what = f.orig.timeless ? "Bu zamansız program" : f.mode === "none" ? "Bu program" : "Bu tekrarlı programın tüm serisi";
     if (!confirm(`${what} silinsin mi?`)) return;
     this._busy = true; this._render();
     try {
-      if (f.timeless) await this._hass.callService("gungors", "delete_timeless_program", { uid: f.orig.uid }, { entity_id: this._config.entity });
+      if (f.orig.timeless) await this._hass.callService("gungors", "delete_timeless_program", { uid: f.orig.uid }, { entity_id: this._config.entity });
       else await this._hass.callWS({ type: "calendar/event/delete", entity_id: this._config.entity, uid: f.orig.uid });
       this._busy = false;
       this._form = null;
@@ -981,7 +989,6 @@ class GungorsProgramCard extends HTMLElement {
       const ev = this._find(el.dataset.k);
       if (ev) this._startTimeless(ev, +el.dataset.m || 0);
     }
-    else if (a === "newtl") { this._openForm({ ...this._newForm(), timeless: true }); }
     else if (a === "past") { this._showPast = !this._showPast; this._render(); }
     else if (a === "pause" || a === "resume") { this._pause(this._find(el.dataset.k), a === "resume"); }
     else if (a === "prev" || a === "next" || a === "today") {
@@ -1216,7 +1223,7 @@ class GungorsProgramCard extends HTMLElement {
       ? `${WD[weekdayIdx(this._day)][1]} ${fmtDate(this._day)}`
       : `Hafta ${fmtDate(this._week)} – ${fmtDate(addDays(this._week, 6))}`;
     if (this._tab === "defaults") return `${this._tabsHtml()}${this._defaultsHtml()}`;
-    return `${this._tabsHtml()}<div class="head"><div class="title">${esc(c.title)}</div><div class="right"><button class="btn" data-a="newtl" title="Saati olmayan, gerektiğinde başlatılan program">Yeni zamansız</button><button class="btn primary" data-a="new">Yeni</button></div></div>
+    return `${this._tabsHtml()}<div class="head"><div class="title">${esc(c.title)}</div><button class="btn primary" data-a="new">Yeni</button></div>
       ${this._error ? `<div class="err">${esc(this._error)} <button class="btn small" data-a="reload">Tekrar dene</button></div>` : ""}
       <div class="sec">Programlar</div>
       ${this._loading && !this._programs.length ? `<div class="empty">Yükleniyor…</div>` : this._programsHtml()}
@@ -1342,10 +1349,11 @@ class GungorsProgramCard extends HTMLElement {
           <button class="btn small" data-a="toform" style="margin-top:6px">Forma geç</button></div>`
       : `${this._targetsHtml(f)}${this._rulesHtml(f)}<button class="link" data-a="toraw">YAML olarak düzenle</button>`;
     if (f.timeless) {
-      return `<div class="head"><div class="title">${f.orig ? "Zamansız programı düzenle" : "Yeni zamansız program"}</div></div>
+      return `<div class="head"><div class="title">${f.orig ? "Programı düzenle" : "Yeni program"}</div></div>
       <div class="form">
         <div class="field"><label>Ad</label><input type="text" data-f="summary" value="${esc(f.summary)}" placeholder="ör. Bebek uyku"></div>
-        <div class="note">Saati yok: listede ▶ ile başlatılır (süre seçilmezse 24 saat), ■ ile durur. Çalışırken çakıştığı programları duraklatır, bitince onlar geri gelir.${f.orig ? " Çalışırken yapılan değişiklik hemen uygulanır." : ""}</div>
+        <label class="check" title="Saati yok: listede ▶ ile başlatılır, ■ ile durur"><input type="checkbox" data-f="timeless" data-rr ${f.timeless ? "checked" : ""}>Zamansız</label>
+        <div class="note">Saati yok: listede ▶ ile başlatılır (süre seçilmezse 24 saat), ■ ile durur. Çalışırken çakıştığı programları duraklatır, bitince onlar geri gelir.${f.orig?.timeless ? " Çalışırken yapılan değişiklik hemen uygulanır." : f.orig ? " Kaydedince takvimdeki kayıt (tekrarlıysa tüm seri) zamansız programa dönüşür." : ""}</div>
         ${program}
         ${this._formError ? `<div class="err">${esc(this._formError)}</div>` : ""}
         <div class="actions">
@@ -1354,10 +1362,11 @@ class GungorsProgramCard extends HTMLElement {
         </div>
       </div>`;
     }
-    const series = f.orig && f.orig.rrule ? `<div class="note">Tekrarlı bir programı düzenlemek tüm seriyi değiştirir.</div>` : "";
+    const series = f.orig?.timeless ? `<div class="note">Kaydedince zamansız program bu saatlerle takvime taşınır.</div>` : f.orig && f.orig.rrule ? `<div class="note">Tekrarlı bir programı düzenlemek tüm seriyi değiştirir.</div>` : "";
     return `<div class="head"><div class="title">${f.orig ? "Programı düzenle" : "Yeni program"}</div></div>
       <div class="form">
         <div class="field"><label>Ad</label><input type="text" data-f="summary" value="${esc(f.summary)}" placeholder="ör. melike_uyku"></div>
+        <label class="check" title="Saati yok: listede ▶ ile başlatılır, ■ ile durur"><input type="checkbox" data-f="timeless" data-rr ${f.timeless ? "checked" : ""}>Zamansız</label>
         <label class="check"><input type="checkbox" data-f="allDay" data-rr ${f.allDay ? "checked" : ""}>Tüm gün</label>
         ${when}
         <div class="field"><label>Tekrar</label><select data-f="mode" data-rr>${modeOpts}</select></div>
