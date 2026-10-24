@@ -72,8 +72,8 @@
  * down with nothing further that way goes into the dock (at the button of the mode shown): up / down walk its
  * buttons and its screen, OK presses them (the screen: tap / hold of the room, camera or vacuum shown, which
  * glows), right goes back to the house. Back / Esc closes a popup, else leaves the dock, else drops the pick.
- * Side panel: the entity picked with the remote shows top right on the picture (its left edge slants off the
- * house): icon in its colour, name, floor, its state in plain words and, where it has one, a bar. A long OK moves
+ * Side panel: the entity picked with the remote shows top right on the picture (its bottom-left corner cut
+ * along the house's long axis): icon in its colour, name, floor, its state in plain words and, where it has one, a bar. A long OK moves
  * the control into the panel (its frame turns gold) instead of the hold action, for the types that have one:
  *   light    left / right brightness -/+ 10 % (below 10 %: off), OK on / off
  *   cover    left / right position -/+ 10 % (no position: close / open), OK open / close, stop while moving
@@ -172,7 +172,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.32.0";
+const CARD_VERSION = "1.33.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -226,11 +226,12 @@ const OTHER_COLOR = "#2ecc5a";
 const STREAM_WAIT_MS = 45000;
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
-// the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its left edge
-// slants (SIDE.cut at the bottom) so it stays off the house. Plain CSS (no inset, no flex gap): TV browsers are old.
-const SIDE = { ref: 1065, w: 315, h: 176, cut: 190 };
+// the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
+// corner is cut along the house's long axis (from the left edge at SIDE.y down to the bottom at SIDE.x: slope ~0.58,
+// as the renders' walls run), so it stays off the house. Plain CSS (no inset, no flex gap): TV browsers are old.
+const SIDE = { ref: 1065, w: 295, h: 200, y: 95, x: 180 };
 const BULB = "M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z";
-const SIDE_POLY = `0 0,100% 0,100% 100%,${SIDE.cut}px 100%`;
+const SIDE_POLY = `0 0,100% 0,100% 100%,${SIDE.x}px 100%,0 ${SIDE.y}px`;
 const SIDE_CSS = `
   .side{position:absolute;right:1.5%;top:3%;width:${SIDE.w}px;height:${SIDE.h}px;transform-origin:100% 0;pointer-events:none;
         font-family:"Segoe UI",Roboto,Arial,sans-serif;color:#e8f4ff;display:none;line-height:1.15}
@@ -238,24 +239,24 @@ const SIDE_CSS = `
   .side .bg{position:absolute;left:0;top:0;width:100%;height:100%;-webkit-clip-path:polygon(${SIDE_POLY});clip-path:polygon(${SIDE_POLY});
             background:linear-gradient(160deg,rgba(13,59,133,.93),rgba(7,29,69,.95) 70%)}
   .side svg.edge{position:absolute;left:0;top:0;width:${SIDE.w}px;height:${SIDE.h}px;overflow:visible}
-  .side .ico{position:absolute;left:78px;top:10px;width:50px;height:50px;border-radius:50%;text-align:center;
+  .side .ico{position:absolute;left:16px;top:14px;width:50px;height:50px;border-radius:50%;text-align:center;
              background:radial-gradient(circle at 50% 45%,var(--lc) 0,var(--lc) 30%,rgba(255,200,90,.22) 60%,rgba(0,0,0,0) 72%)}
   .side .ico svg{width:32px;height:32px;margin-top:9px;fill:#fff8e6;filter:drop-shadow(0 0 7px var(--lc))}
   .side .ico ha-icon{--mdc-icon-size:32px;margin-top:9px;color:#fff8e6;filter:drop-shadow(0 0 7px var(--lc))}
   .side.off .ico{background:radial-gradient(circle,#24406e 0,#24406e 55%,rgba(0,0,0,0) 72%)}
   .side.off .ico svg{fill:#7f9ac4;filter:none}.side.off .ico ha-icon{color:#7f9ac4;filter:none}
-  .side .name{position:absolute;left:138px;right:14px;top:12px;height:28px;font-size:22px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .side .sub{position:absolute;left:139px;right:14px;top:41px;height:14px;font-size:11px;color:#9fcfff;letter-spacing:.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden}
-  .side .w{position:absolute;right:16px;top:64px;width:200px;height:14px;text-align:right;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#ffd66b;white-space:nowrap;overflow:hidden}
-  .side .v{position:absolute;right:16px;top:79px;width:160px;height:30px;text-align:right;font:bold 28px Consolas,"Courier New",monospace;line-height:30px;color:#7dff9a;text-shadow:0 0 10px rgba(125,255,154,.6);white-space:nowrap}
+  .side .name{position:absolute;left:76px;right:14px;top:16px;height:28px;font-size:22px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .side .sub{position:absolute;left:77px;right:14px;top:45px;height:14px;font-size:11px;color:#9fcfff;letter-spacing:.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden}
+  .side .w{position:absolute;right:16px;top:74px;width:200px;height:14px;text-align:right;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#ffd66b;white-space:nowrap;overflow:hidden}
+  .side .v{position:absolute;right:16px;top:89px;width:160px;height:30px;text-align:right;font:bold 28px Consolas,"Courier New",monospace;line-height:30px;color:#7dff9a;text-shadow:0 0 10px rgba(125,255,154,.6);white-space:nowrap}
   .side.off .v{color:#6f93c2;text-shadow:none}
-  .side .bar{position:absolute;left:160px;right:20px;top:116px;height:10px;border-radius:5px;background:#0a2a5e;border:1px solid #3b6fb0}
+  .side .bar{position:absolute;left:92px;right:22px;top:131px;height:10px;border-radius:5px;background:#0a2a5e;border:1px solid #3b6fb0}
   .side .fill{position:absolute;left:0;top:0;bottom:0;width:var(--b);border-radius:5px;background:linear-gradient(90deg,rgba(0,0,0,.25),var(--lc));box-shadow:0 0 8px var(--lc)}
   .side .knob{position:absolute;top:50%;left:var(--b);width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px var(--lc),0 0 10px var(--lc)}
   .side.off .bar{opacity:.4}.side.off .fill,.side.off .knob{display:none}
-  .side .arr{display:none;position:absolute;top:110px;font-size:16px;line-height:20px;color:#ffd66b;text-shadow:0 0 8px #ffd66b}
+  .side .arr{display:none;position:absolute;top:125px;font-size:16px;line-height:20px;color:#ffd66b;text-shadow:0 0 8px #ffd66b}
   .side.ctl .arr{display:block}
-  .side .hint{position:absolute;right:14px;top:134px;width:170px;text-align:right;font-size:11px;line-height:13px;color:#cfe6ff}
+  .side .hint{position:absolute;right:14px;top:149px;width:170px;text-align:right;font-size:11px;line-height:13px;color:#cfe6ff}
   .side .hint div{white-space:nowrap;height:13px}
   .side .k{display:inline-block;padding:0 4px;margin-right:3px;border-radius:4px;border:1px solid #8cc4ff;background:#0d3b85;font-size:10px;line-height:11px;color:#fff}
 `;
@@ -1251,13 +1252,13 @@ class GungorsFloorCard extends HTMLElement {
       ? (i.step ? `<div>${k("◀")}${k("▶")}${i.adj}</div>` : "") + (i.ok ? `<div>${k("OK")}${i.okWord}</div>` : "") + `<div>${k("▲")}${k("▼")}bitir</div>`
       : (this._sideTapWord(it) ? `<div>${k("OK")}${this._sideTapWord(it)}</div>` : "") + (i.ctl ? `<div>uzun ${k("OK")}kontrol</div>` : "");
     el.innerHTML = `<div class="bg"></div>
-      <svg class="edge" viewBox="0 0 ${W} ${H}"><polygon points="1.5,1.5 ${W - 1.5},1.5 ${W - 1.5},${H - 1.5} ${SIDE.cut},${H - 1.5}"
+      <svg class="edge" viewBox="0 0 ${W} ${H}"><polygon points="1.5,1.5 ${W - 1.5},1.5 ${W - 1.5},${H - 1.5} ${SIDE.x},${H - 1.5} 1.5,${SIDE.y}"
         fill="none" stroke="${stroke}" stroke-width="${ctl ? 3 : 2}" style="filter:drop-shadow(0 0 ${ctl ? 9 : 5}px ${stroke})"/></svg>
       <div class="ico">${i.svg ? `<svg viewBox="0 0 24 24"><path d="${i.svg}"/></svg>` : `<ha-icon icon="${i.icon}"></ha-icon>`}</div>
       <div class="name"></div><div class="sub">${fl} · ${i.kind}</div>
       <div class="w">${i.word}</div><div class="v">${i.value}</div>
       ${i.bar != null ? `<div class="bar"><div class="fill"></div><div class="knob"></div></div>
-      <div class="arr" style="left:144px">◀</div><div class="arr" style="right:4px">▶</div>` : ""}
+      <div class="arr" style="left:76px">◀</div><div class="arr" style="right:4px">▶</div>` : ""}
       <div class="hint">${hint}</div>`;
     el.querySelector(".name").textContent = name;
   }
