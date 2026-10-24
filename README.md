@@ -6,7 +6,7 @@ Custom Lovelace cards for the Gungor house. Installed through HACS as a custom r
 | Card | Used by | What it does |
 |---|---|---|
 | `custom:gungors-rooms-card` | `unnecessary` dashboard | Lists active entities of a whitelist by domain/area and turns the selected ones off |
-| `custom:gungors-program-card` | `program` dashboard | The gungors program calendar (`calendar.program`): programs active now, a week grid per room, and an editor for an entry's targets and rules |
+| `custom:gungors-program-card` | `program` dashboard | The gungors program calendar (`calendar.program`): every program (pinned first; start and stop timeless ones like "Bebek uyku"), a week grid per room, and an editor for an entry's targets and rules |
 | `custom:gungors-floor-card` | `floorplan-3d` dashboard | Live-lit 3D view of a floor (Blender renders + WebGL2), tap/hold like the floorplan dashboard |
 
 Each card's header comment is its full reference (YAML options, messages, behaviour): read the
