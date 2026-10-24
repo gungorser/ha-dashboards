@@ -72,10 +72,15 @@
  * down with nothing further that way goes into the dock (at the button of the mode shown): up / down walk its
  * buttons and its screen, OK presses them (the screen: tap / hold of the room, camera or vacuum shown, which
  * glows), right goes back to the house. Back / Esc closes a popup, else leaves the dock, else drops the pick.
- * Side panel (lights): a light picked with the remote shows top right on the picture: its icon in its colour,
- * name, floor, state (on with its brightness, off, unreachable) and a brightness bar. A long OK on it moves the
- * control into the panel (its frame turns gold) instead of its hold action: left / right brightness -/+ 10 %
- * (below 10 %: off), OK on / off, up / down (or back, if the browser passes it on; Fully Kiosk keeps it for its
+ * Side panel: the entity picked with the remote shows top right on the picture (its left edge slants off the
+ * house): icon in its colour, name, floor, its state in plain words and, where it has one, a bar. A long OK moves
+ * the control into the panel (its frame turns gold) instead of the hold action, for the types that have one:
+ *   light    left / right brightness -/+ 10 % (below 10 %: off), OK on / off
+ *   cover    left / right position -/+ 10 % (no position: close / open), OK open / close, stop while moving
+ *            (page-only covers too)
+ *   climate  shows the room temperature; left / right target -/+ its step, OK on (its first mode) / off
+ *   valve    OK open / close;  vacuum: OK start / back to the dock;  camera and others: no control, state only
+ * In the control: OK as above, up / down (or back, if the browser passes it on; Fully Kiosk keeps it for its
  * settings) give the control back to the house; 15 s without a key too, and 60 s drop the pick. Other types keep
  * their hold action, except more-info: from the remote it does nothing (Home Assistant's dialog could not be
  * closed without back). A popup of the card closes with OK or back.
@@ -167,7 +172,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.31.0";
+const CARD_VERSION = "1.32.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -221,35 +226,38 @@ const OTHER_COLOR = "#2ecc5a";
 const STREAM_WAIT_MS = 45000;
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
-// the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card
-const SIDE = { ref: 1065, w: 305, h: 212 };
+// the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its left edge
+// slants (SIDE.cut at the bottom) so it stays off the house. Plain CSS (no inset, no flex gap): TV browsers are old.
+const SIDE = { ref: 1065, w: 315, h: 176, cut: 190 };
 const BULB = "M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z";
+const SIDE_POLY = `0 0,100% 0,100% 100%,${SIDE.cut}px 100%`;
 const SIDE_CSS = `
-  .side{position:absolute;right:1.4%;top:3%;width:${SIDE.w}px;height:${SIDE.h}px;transform-origin:100% 0;pointer-events:none;
-        font-family:"Segoe UI",Roboto,Arial,sans-serif;color:#e8f4ff;display:none}
+  .side{position:absolute;right:1.5%;top:3%;width:${SIDE.w}px;height:${SIDE.h}px;transform-origin:100% 0;pointer-events:none;
+        font-family:"Segoe UI",Roboto,Arial,sans-serif;color:#e8f4ff;display:none;line-height:1.15}
   .side.on{display:block}
-  .side .bg{position:absolute;inset:0;clip-path:polygon(0 0,100% 0,100% 100%,135px 100%,0 117px);
-            background:linear-gradient(160deg,rgba(13,59,133,.92),rgba(7,29,69,.94) 70%)}
-  .side svg.edge{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
-  .side .ico{position:absolute;left:16px;top:16px;width:58px;height:58px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-             background:radial-gradient(circle at 50% 45%,var(--lc) 0 30%,rgba(255,200,90,.25) 60%,rgba(0,0,0,0) 72%)}
-  .side .ico svg{width:38px;height:38px;fill:#fff8e6;filter:drop-shadow(0 0 8px var(--lc))}
-  .side.off .ico{background:radial-gradient(circle,#24406e 0 55%,transparent 72%)}
-  .side.off .ico svg{fill:#7f9ac4;filter:none}
-  .side .name{position:absolute;left:86px;right:12px;top:16px;font-size:26px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .side .sub{position:absolute;left:87px;top:50px;font-size:12px;color:#9fcfff;letter-spacing:.5px;text-transform:uppercase}
-  .side .state{position:absolute;right:22px;top:84px;text-align:right}
-  .side .w{font-size:13px;letter-spacing:1px;text-transform:uppercase;color:#ffd66b}
-  .side .v{font:bold 40px Consolas,"Courier New",monospace;color:#7dff9a;text-shadow:0 0 10px rgba(125,255,154,.6);line-height:1;min-height:40px}
-  .side.off .v{color:#6f93c2;text-shadow:none;font-size:30px}
-  .side .bar{position:absolute;left:118px;right:22px;top:146px;height:14px;border-radius:7px;background:#0a2a5e;border:1px solid #3b6fb0}
-  .side .fill{position:absolute;left:0;top:0;bottom:0;width:var(--b);border-radius:7px;background:linear-gradient(90deg,#8a5a1a,var(--lc));box-shadow:0 0 10px var(--lc)}
-  .side .knob{position:absolute;top:50%;left:var(--b);width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;background:#fff;box-shadow:0 0 0 3px var(--lc),0 0 12px var(--lc)}
-  .side.off .bar{opacity:.35}.side.off .fill,.side.off .knob{display:none}
-  .side .arr{display:none;position:absolute;top:138px;font-size:22px;color:#ffd66b;text-shadow:0 0 8px #ffd66b}
+  .side .bg{position:absolute;left:0;top:0;width:100%;height:100%;-webkit-clip-path:polygon(${SIDE_POLY});clip-path:polygon(${SIDE_POLY});
+            background:linear-gradient(160deg,rgba(13,59,133,.93),rgba(7,29,69,.95) 70%)}
+  .side svg.edge{position:absolute;left:0;top:0;width:${SIDE.w}px;height:${SIDE.h}px;overflow:visible}
+  .side .ico{position:absolute;left:78px;top:10px;width:50px;height:50px;border-radius:50%;text-align:center;
+             background:radial-gradient(circle at 50% 45%,var(--lc) 0,var(--lc) 30%,rgba(255,200,90,.22) 60%,rgba(0,0,0,0) 72%)}
+  .side .ico svg{width:32px;height:32px;margin-top:9px;fill:#fff8e6;filter:drop-shadow(0 0 7px var(--lc))}
+  .side .ico ha-icon{--mdc-icon-size:32px;margin-top:9px;color:#fff8e6;filter:drop-shadow(0 0 7px var(--lc))}
+  .side.off .ico{background:radial-gradient(circle,#24406e 0,#24406e 55%,rgba(0,0,0,0) 72%)}
+  .side.off .ico svg{fill:#7f9ac4;filter:none}.side.off .ico ha-icon{color:#7f9ac4;filter:none}
+  .side .name{position:absolute;left:138px;right:14px;top:12px;height:28px;font-size:22px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .side .sub{position:absolute;left:139px;right:14px;top:41px;height:14px;font-size:11px;color:#9fcfff;letter-spacing:.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden}
+  .side .w{position:absolute;right:16px;top:64px;width:200px;height:14px;text-align:right;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#ffd66b;white-space:nowrap;overflow:hidden}
+  .side .v{position:absolute;right:16px;top:79px;width:160px;height:30px;text-align:right;font:bold 28px Consolas,"Courier New",monospace;line-height:30px;color:#7dff9a;text-shadow:0 0 10px rgba(125,255,154,.6);white-space:nowrap}
+  .side.off .v{color:#6f93c2;text-shadow:none}
+  .side .bar{position:absolute;left:160px;right:20px;top:116px;height:10px;border-radius:5px;background:#0a2a5e;border:1px solid #3b6fb0}
+  .side .fill{position:absolute;left:0;top:0;bottom:0;width:var(--b);border-radius:5px;background:linear-gradient(90deg,rgba(0,0,0,.25),var(--lc));box-shadow:0 0 8px var(--lc)}
+  .side .knob{position:absolute;top:50%;left:var(--b);width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px var(--lc),0 0 10px var(--lc)}
+  .side.off .bar{opacity:.4}.side.off .fill,.side.off .knob{display:none}
+  .side .arr{display:none;position:absolute;top:110px;font-size:16px;line-height:20px;color:#ffd66b;text-shadow:0 0 8px #ffd66b}
   .side.ctl .arr{display:block}
-  .side .hint{position:absolute;right:14px;bottom:8px;font-size:12px;color:#cfe6ff;display:flex;flex-direction:column;gap:4px;align-items:flex-end}
-  .side .k{display:inline-block;min-width:18px;padding:1px 5px;border-radius:5px;border:1px solid #8cc4ff;background:#0d3b85;text-align:center;font-size:11px;color:#fff;margin-right:3px}
+  .side .hint{position:absolute;right:14px;top:134px;width:170px;text-align:right;font-size:11px;line-height:13px;color:#cfe6ff}
+  .side .hint div{white-space:nowrap;height:13px}
+  .side .k{display:inline-block;padding:0 4px;margin-right:3px;border-radius:4px;border:1px solid #8cc4ff;background:#0d3b85;font-size:10px;line-height:11px;color:#fff}
 `;
 const CSS = `${SIDE_CSS}
   ha-card{overflow:hidden;background:#3a3a3a;-webkit-tap-highlight-color:transparent;
@@ -1079,7 +1087,10 @@ class GungorsFloorCard extends HTMLElement {
   }
 
   _keyAct(p, which) {
-    if (p.id && which === "hold" && this._kz === "house" && this._sideLight()) { this._kCtl = true; this._keyApply(); return; }
+    if (p.id && which === "hold" && this._kz === "house") {   // a long OK: the side panel's control, where the type has one
+      const i = this._sideCtl();
+      if (i && i.ctl) { this._kCtl = true; this._keyApply(); return; }
+    }
     const e = p.id && this._map.get(p.id), act = e && e[which + "_action"];
     if (act && act.action === "more-info") return;    // Home Assistant's dialog: the remote could not close it (Fully keeps back)
     if (p.id) this._run(p.id, which);
@@ -1105,7 +1116,7 @@ class GungorsFloorCard extends HTMLElement {
     if (this._kz) this._kIdle = setTimeout(() => {
       if (this._kCtl) { this._kCtl = false; this._keyApply(); } else this._keyDrop();
     }, this._kCtl ? KEY_CTL_MS : KEY_IDLE_MS);
-    if (this._kz !== "house" || this._kCtl && !this._sideLight()) this._kCtl = false;
+    if (this._kz !== "house" || this._kCtl && !(this._sideCtl() || {}).ctl) this._kCtl = false;
     if (this._kid !== this._sideId) { this._kCtl = false; this._sideId = this._kid; this._sidePending = null; }
     this._sideRender();
     this._dock.querySelectorAll(".btn, .screen").forEach((el) =>
@@ -1118,83 +1129,144 @@ class GungorsFloorCard extends HTMLElement {
     this._post({ gf: "highlight", id: hl });
   }
 
-  // ------------------------------------------------------------------ side panel (a light picked with the remote)
-  // the light picked in the house, else null: {id, e, st}
-  _sideLight() {
-    if (this._kz !== "house" || !this._kid || !this._page || this._page.entities.get(this._kid) !== "light") return null;
-    const e = this._map.get(this._kid), st = e && this._hass.states[e.entity];
-    return st ? { id: this._kid, e, st } : null;
+  // ------------------------------------------------------------------ side panel (the entity picked with the remote)
+  // the entity picked in the house: {id, type, e (YAML), st (state; null for a page-only cover)}, else null
+  _sideItem() {
+    if (this._kz !== "house" || !this._kid || !this._page || !this._hass) return null;
+    const id = this._kid, type = this._page.entities.get(id);
+    if (this._local.has(id)) return { id, type: "cover", e: this._local.get(id), st: null };
+    const e = this._map.get(id), st = e && this._hass.states[e.entity];
+    return st ? { id, type, e, st } : null;
   }
 
-  // brightness 0-100 shown: a value just asked for wins for a while, else the light's own
-  _sidePct(st) {
-    const p = this._sidePending;
-    if (p && Date.now() - p.t < 4000) return p.v;
-    if (st.state !== "on") return 0;
-    const b = st.attributes.brightness;
-    return b == null ? 100 : Math.round(b / 2.55);
+  // what the panel shows and what its control does, per type; human words, no technical attributes
+  _sideInfo(it) {
+    const { id, type, e, st } = it, a = st ? st.attributes : {}, hass = this._hass;
+    const na = st && (st.state === "unavailable" || st.state === "unknown");
+    const pend = this._sidePending && Date.now() - this._sidePending.t < 4000 ? this._sidePending.v : null;
+    const call = (d, s, data) => hass.callService(d, s, { entity_id: e.entity, ...data });
+    const pct = (v) => "%" + Math.round(v);
+    const info = { kind: "cihaz", icon: "mdi:information-outline", color: OTHER_COLOR, on: !na, word: na ? "ulaşılamıyor" : st ? st.state : "", value: "", bar: null };
+    if (type === "light") {
+      const dims = !Array.isArray(a.supported_color_modes) || a.supported_color_modes.some((m) => m !== "onoff");
+      const own = st.state === "on" ? (a.brightness == null ? 100 : Math.round(a.brightness / 2.55)) : 0;
+      if (pend != null && (pend === 0 ? st.state === "off" : st.state === "on" && Math.abs(own - pend) <= 1)) this._sidePending = null;
+      const v = na ? 0 : pend != null ? pend : own, rgb = Array.isArray(a.rgb_color) ? a.rgb_color : null;
+      return { kind: "lamba", svg: BULB, color: rgb ? `rgb(${rgb.join(",")})` : "#ffc35a", on: v > 0, word: na ? "ulaşılamıyor" : v > 0 ? "açık" : "kapalı",
+        value: v > 0 && dims ? pct(v) : "—", bar: dims ? v : null, adj: "parlaklık", okWord: "aç/kapa", ctl: !na,
+        step: dims ? (d) => { const n = Math.max(0, Math.min(100, Math.round((v + d * 10) / 10) * 10)); if (n === v) return;
+          this._sidePending = { v: n, t: Date.now() }; n ? call("light", "turn_on", { brightness_pct: n }) : call("light", "turn_off"); } : null,
+        ok: () => { this._sidePending = null; call("light", st.state === "on" ? "turn_off" : "turn_on"); } };
+    }
+    if (type === "cover") {
+      const local = !st, own = local ? this._localValue(id) : a.current_position != null ? a.current_position : st.state === "closed" ? 0 : 100;
+      if (pend != null && Math.abs(own - pend) <= 1) this._sidePending = null;
+      const v = na ? 0 : pend != null ? pend : own, moving = st && (st.state === "opening" || st.state === "closing");
+      const hasPos = local || a.current_position != null;
+      const set = (n) => { this._sidePending = { v: n, t: Date.now() };
+        if (local) this._setLocal(id, n); else if (hasPos) call("cover", "set_cover_position", { position: n }); else call("cover", n ? "open_cover" : "close_cover"); };
+      return { kind: local ? "kapı" : "perde", icon: v > 0 ? "mdi:window-shutter-open" : "mdi:window-shutter", color: "#5fb4ff", on: v > 0,
+        word: na ? "ulaşılamıyor" : moving ? (st.state === "opening" ? "açılıyor" : "kapanıyor") : v >= 100 ? "açık" : v <= 0 ? "kapalı" : "kısmen açık",
+        value: na ? "—" : pct(v), bar: v, adj: "pozisyon", okWord: moving ? "dur" : v > 0 ? "kapat" : "aç", ctl: !na,
+        step: (d) => { const n = hasPos ? Math.max(0, Math.min(100, Math.round((v + d * 10) / 10) * 10)) : d > 0 ? 100 : 0; if (n !== v) set(n); },
+        ok: () => { if (moving) call("cover", "stop_cover"); else set(v > 0 ? 0 : 100); } };
+    }
+    if (type === "climate") {
+      const cur = Number(a.current_temperature), lo = Number(a.min_temp) || 5, hi = Number(a.max_temp) || 30, step = Number(a.target_temp_step) || 0.5;
+      const own = Number(a.temperature);
+      if (pend != null && Math.abs(own - pend) < step / 2) this._sidePending = null;
+      const t = pend != null ? pend : own, off = st.state === "off", heating = a.hvac_action === "heating";
+      const deg = (x) => (Number.isFinite(x) ? (Math.round(x * 10) / 10).toFixed(1) + "°" : "—");
+      const modes = Array.isArray(a.hvac_modes) ? a.hvac_modes : ["heat", "off"];
+      return { kind: "ısıtma", icon: heating ? "mdi:radiator" : off ? "mdi:radiator-off" : "mdi:radiator", color: heating ? "#ff7a45" : CLIMATE_COLOR, on: !na && !off,
+        word: na ? "ulaşılamıyor" : off ? "kapalı" : (heating ? "ısıtıyor" : "bekliyor") + (Number.isFinite(t) ? " · hedef " + deg(t) : ""),
+        value: deg(cur), bar: !off && Number.isFinite(t) ? Math.max(0, Math.min(100, (t - lo) / (hi - lo) * 100)) : null,
+        adj: "hedef ±" + step, okWord: off ? "aç" : "kapat", ctl: !na,
+        step: off || !Number.isFinite(t) ? null : (d) => { const n = Math.max(lo, Math.min(hi, Math.round((t + d * step) / step) * step));
+          if (n === t) return; this._sidePending = { v: n, t: Date.now() }; call("climate", "set_temperature", { temperature: n }); },
+        ok: () => { this._sidePending = null; call("climate", "set_hvac_mode", { hvac_mode: off ? (modes.find((m) => m !== "off") || "heat") : "off" }); } };
+    }
+    if (type === "valve") {
+      const open = st.state === "open" || st.state === "opening";
+      return { kind: "sulama", icon: open ? "mdi:sprinkler-variant" : "mdi:sprinkler", color: "#4fc3f7", on: open,
+        word: na ? "ulaşılamıyor" : open ? "sulanıyor" : "kapalı", value: "", bar: null, okWord: open ? "kapat" : "aç", ctl: !na,
+        ok: () => call("valve", open ? "close_valve" : "open_valve") };
+    }
+    if (type === "camera") {
+      const ms = e.motion && hass.states[e.motion], live = st.state === "streaming";
+      return { kind: "kamera", icon: "mdi:cctv", color: OTHER_COLOR, on: !na,
+        word: na ? "ulaşılamıyor" : ms && ms.state === "on" ? "hareket var" : live ? "canlı" : "hazır", value: "", bar: null };
+    }
+    if (type === "vacuum") {
+      const W = { cleaning: "temizliyor", docked: "şarjda", returning: "eve dönüyor", paused: "duraklatıldı", idle: "bekliyor", error: "hata" };
+      const busy = st.state === "cleaning" || st.state === "returning";
+      return { kind: "süpürge", icon: "mdi:robot-vacuum", color: "#b388ff", on: busy, word: na ? "ulaşılamıyor" : W[st.state] || st.state, value: "", bar: null,
+        okWord: st.state === "cleaning" ? "eve gönder" : "başlat", ctl: !na,
+        ok: () => call("vacuum", st.state === "cleaning" ? "return_to_base" : "start") };
+    }
+    if (!na) {                                        // anything else: its state as Home Assistant words it, with its unit
+      const u = a.unit_of_measurement;
+      info.word = "durum";
+      info.value = st.state + (u ? " " + u : "");
+      if (info.value.length > 10) { info.word = st.state; info.value = ""; }
+    }
+    return info;
   }
 
-  _sideDims(st) {
-    const modes = st.attributes.supported_color_modes;
-    return !Array.isArray(modes) || modes.some((m) => m !== "onoff");
+  // a name for people: the YAML name, else Home Assistant's, else the page id; snake_case ids lose their type and get a capital
+  _sideName(it) {
+    let n = (it.e && it.e.name) || (it.st && it.st.attributes.friendly_name) || it.id;
+    if (/_/.test(n) && !/\s/.test(n)) {
+      n = n.replace(/_(light|lamp|cover|blind|climate|thermostat|camera|kamera|valve|vacuum)$/i, "").replace(/_/g, " ");
+      n = n.charAt(0).toLocaleUpperCase("tr-TR") + n.slice(1);
+    }
+    return n;
   }
 
-  _sideStep(d) {
-    const L = this._sideLight();
-    if (!L || !this._sideDims(L.st) || L.st.state === "unavailable") return;
-    const cur = this._sidePct(L.st), v = Math.max(0, Math.min(100, Math.round((cur + d * 10) / 10) * 10));
-    if (v === cur) return;
-    this._sidePending = { v, t: Date.now() };
-    if (v === 0) this._hass.callService("light", "turn_off", { entity_id: L.e.entity });
-    else this._hass.callService("light", "turn_on", { entity_id: L.e.entity, brightness_pct: v });
-  }
+  _sideCtl() { const it = this._sideItem(); return it ? this._sideInfo(it) : null; }
 
-  _sideToggle() {
-    const L = this._sideLight();
-    if (!L || L.st.state === "unavailable") return;
-    this._sidePending = null;
-    this._hass.callService("light", L.st.state === "on" ? "turn_off" : "turn_on", { entity_id: L.e.entity });
-  }
+  _sideStep(d) { const i = this._sideCtl(); if (i && i.ctl && i.step) i.step(d); }
+
+  _sideToggle() { const i = this._sideCtl(); if (i && i.ctl && i.ok) i.ok(); }
 
   _sideRender() {
     const el = this._side;
     if (!el) return;
-    const L = this._hass && this._sideLight();
-    if (!L) { el.classList.remove("on"); this._sideSig = null; return; }
-    const { id, e, st } = L, a = st.attributes, na = st.state === "unavailable" || st.state === "unknown";
-    const p = this._sidePending, pend = p && Date.now() - p.t < 4000;
-    if (pend && (p.v === 0 ? st.state === "off" : st.state === "on" && Math.abs(this._sidePct({ state: "on", attributes: a }) - p.v) <= 1))
-      this._sidePending = null;                       // the light got there
-    const pct = na ? 0 : this._sidePct(st), on = !na && pct > 0;
-    const rgb = Array.isArray(a.rgb_color) ? a.rgb_color : null;
-    const lc = rgb ? `rgb(${rgb.join(",")})` : "#ffc35a";
+    const it = this._hass && this._sideItem();
+    if (!it) { el.classList.remove("on"); this._sideSig = null; return; }
+    const i = this._sideInfo(it), name = this._sideName(it), ctl = !!this._kCtl && !!i.ctl;
     const fl = /^kat(\d+)$/i.test(this._floor) ? "Kat " + this._floor.slice(3) : this._floor;
-    const name = e.name || a.friendly_name || id;
-    const ctl = !!this._kCtl, dims = this._sideDims(st);
-    const sig = JSON.stringify([id, name, fl, na, on, pct, lc, ctl, dims]);
+    const color = (it.e && it.e.color) || i.color;
+    const sig = JSON.stringify([it.id, name, fl, i.kind, i.icon, i.svg ? 1 : 0, color, i.on, i.word, i.value, i.bar, ctl, i.adj, i.okWord, !!i.step]);
     el.classList.add("on");
     if (sig === this._sideSig) return;
     this._sideSig = sig;
-    el.classList.toggle("off", !on);
+    el.classList.toggle("off", !i.on);
     el.classList.toggle("ctl", ctl);
-    el.style.setProperty("--lc", lc);
-    el.style.setProperty("--b", pct + "%");
-    const stroke = ctl ? "#ffd66b" : "#a8dcff";
+    el.style.setProperty("--lc", color);
+    el.style.setProperty("--b", (i.bar || 0) + "%");
+    const stroke = ctl ? "#ffd66b" : "#a8dcff", W = SIDE.w, H = SIDE.h;
     const k = (t) => `<span class="k">${t}</span>`;
     const hint = ctl
-      ? (dims ? `<span>${k("◀")}${k("▶")}parlaklık ±10</span>` : "") + `<span>${k("OK")}aç/kapa &nbsp;${k("▲")}${k("▼")}bitir</span>`
-      : `<span>${k("OK")}aç/kapa</span><span>uzun ${k("OK")}kontrol</span>`;
+      ? (i.step ? `<div>${k("◀")}${k("▶")}${i.adj}</div>` : "") + (i.ok ? `<div>${k("OK")}${i.okWord}</div>` : "") + `<div>${k("▲")}${k("▼")}bitir</div>`
+      : (this._sideTapWord(it) ? `<div>${k("OK")}${this._sideTapWord(it)}</div>` : "") + (i.ctl ? `<div>uzun ${k("OK")}kontrol</div>` : "");
     el.innerHTML = `<div class="bg"></div>
-      <svg class="edge" viewBox="0 0 ${SIDE.w} ${SIDE.h}"><polygon points="1.5,1.5 ${SIDE.w - 1.5},1.5 ${SIDE.w - 1.5},${SIDE.h - 1.5} 135,${SIDE.h - 1.5} 1.5,117"
-        fill="none" stroke="${stroke}" stroke-width="${ctl ? 3 : 2}" style="filter:drop-shadow(0 0 ${ctl ? 10 : 6}px ${stroke})"/></svg>
-      <div class="ico"><svg viewBox="0 0 24 24"><path d="${BULB}"/></svg></div>
-      <div class="name"></div><div class="sub">${fl} · lamba</div>
-      <div class="state"><div class="w">${na ? "ulaşılamıyor" : on ? "açık" : "kapalı"}</div><div class="v">${on && dims ? "%" + pct : "—"}</div></div>
-      ${dims ? `<div class="bar"><div class="fill"></div><div class="knob"></div></div>
-      <div class="arr" style="left:97px">◀</div><div class="arr" style="right:-2px">▶</div>` : ""}
+      <svg class="edge" viewBox="0 0 ${W} ${H}"><polygon points="1.5,1.5 ${W - 1.5},1.5 ${W - 1.5},${H - 1.5} ${SIDE.cut},${H - 1.5}"
+        fill="none" stroke="${stroke}" stroke-width="${ctl ? 3 : 2}" style="filter:drop-shadow(0 0 ${ctl ? 9 : 5}px ${stroke})"/></svg>
+      <div class="ico">${i.svg ? `<svg viewBox="0 0 24 24"><path d="${i.svg}"/></svg>` : `<ha-icon icon="${i.icon}"></ha-icon>`}</div>
+      <div class="name"></div><div class="sub">${fl} · ${i.kind}</div>
+      <div class="w">${i.word}</div><div class="v">${i.value}</div>
+      ${i.bar != null ? `<div class="bar"><div class="fill"></div><div class="knob"></div></div>
+      <div class="arr" style="left:144px">◀</div><div class="arr" style="right:4px">▶</div>` : ""}
       <div class="hint">${hint}</div>`;
     el.querySelector(".name").textContent = name;
+  }
+
+  // what a short OK does on the entity picked (its tap action), in words
+  _sideTapWord(it) {
+    if (!it.st) return "aç/kapa";
+    const a = it.e.tap_action && it.e.tap_action.action;
+    return a === "toggle" ? "aç/kapa" : a === "camera" ? "canlı izle" : a === "popup" ? "göster" : a && a !== "more-info" && a !== "none" ? "çalıştır" : "";
   }
 
   // rooms of the heating mode: the floor's climates mapped to Home Assistant, in the order of the YAML
