@@ -71,7 +71,8 @@
  * hovered ({gf: "highlight", id}). OK / Enter: a short press is its tap, a long one (HOLD_MS) its hold. Left or
  * down with nothing further that way goes into the dock (at the button of the mode shown): up / down walk its
  * buttons and its screen, OK presses them (the screen: tap / hold of the room, camera or vacuum shown, which
- * glows), right goes back to the house. OK on floor / cut opens its choices: up / down (floors) or left / right (cuts) walk them, OK picks, any other arrow closes. Back / Esc closes a popup, else leaves the dock, else drops the pick.
+ * glows), right goes back to the house. Colour keys: red the dock, blue the side panel's control, green / yellow
+ * the house. OK on floor / cut opens its choices: up / down (floors) or left / right (cuts) walk them, OK picks, any other arrow closes. Back / Esc closes a popup, else leaves the dock, else drops the pick.
  * Side panel: the entity picked with the remote shows top right on the picture (its bottom-left corner cut
  * along the house's long axis): icon in its colour, name, floor, its state in plain words and, where it has one, a bar. A long OK moves
  * the control into the panel (its frame turns gold) instead of the hold action, for the types that have one:
@@ -172,7 +173,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.36.0";
+const CARD_VERSION = "1.37.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -191,6 +192,9 @@ const DOCK_MODES = [
 const CUTS = ["none", "front", "all"];
 const CUT_ICON = { none: "mdi:wall", front: "mdi:box-cutter", all: "mdi:floor-plan" };
 const CUT_TITLE = { none: "walls: no cut", front: "walls: front cut", all: "walls: all cut" };
+// the remote's colour keys (KeyboardEvent.key; keyCode on TV browsers that give no key name)
+const COLOUR_KEYS = { ColorF0Red: "red", ColorF1Green: "green", ColorF2Yellow: "yellow", ColorF3Blue: "blue" };
+const COLOUR_CODES = { 403: "red", 404: "green", 405: "yellow", 406: "blue", 183: "red", 184: "green", 185: "yellow", 186: "blue" };
 // the remote's walk through the dock (up = next): the screen, then round the edges from the bottom right
 const DOCK_KEYS = ["screen", "cut", "heating", "sun", "camera", "vacuum", "floor"];
 const CUT_LABEL = { none: "duvar", front: "ön kesik", all: "hepsi" };
@@ -230,7 +234,7 @@ const STREAM_WAIT_MS = 45000;
 // the dock, bottom left: three straight edges, a horizontal top (DOCK.top px long, the floor button), a slanted
 // edge along the render's world Y axis (slope 0.707 as model.json camera y = [-24.27, -17.16] shows it; the mode
 // buttons) and a vertical right edge (DOCK.side px long, the wall cut button). Its height is dock_radius.
-const DOCK = { top: 130, side: 140, slope: Math.SQRT1_2 };
+const DOCK = { top: 220, side: 150, slope: Math.SQRT1_2 };
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
@@ -1013,12 +1017,12 @@ class GungorsFloorCard extends HTMLElement {
   _dockGeo() {
     const R = this._config.dock_radius, dy = R - DOCK.side, dx = dy / DOCK.slope, W = Math.round(DOCK.top + dx);
     const L = Math.hypot(dx, dy), u = [dx / L, dy / L], n = [-u[1], u[0]], at = {};
-    ["vacuum", "camera", "sun", "heating"].forEach((id, k) => {
-      const t = (0.08 + k * 0.24) * L;
+    ["vacuum", "camera", "sun", "heating"].forEach((id, k) => {   // evenly along the slanted edge, centred on it
+      const t = (k + 0.6) / 4.5 * L;                              // clear of the corners' buttons
       at[id] = [DOCK.top + u[0] * t + n[0] * 46, u[1] * t + n[1] * 46];
     });
-    at.floor = [46, 46];
-    at.cut = [W - 46, R - 58];
+    at.floor = [DOCK.top / 2, 46];                                // the middle of the top edge
+    at.cut = [W - 46, R - DOCK.side / 2];                         // the middle of the right edge
     return { W, at, poly: [[0, 0], [DOCK.top, 0], [W, dy], [W, R], [0, R]] };
   }
 
@@ -1052,6 +1056,12 @@ class GungorsFloorCard extends HTMLElement {
     if (path.some((n) => n && n.tagName && (/^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName) || /DIALOG/.test(n.tagName) || n.isContentEditable)))
       return;                                         // a text field or a Home Assistant dialog has the keys
     const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
+    const colour = COLOUR_KEYS[k] || COLOUR_CODES[ev.keyCode];
+    if (colour) {                                     // red: the dock, blue: the side panel, green / yellow: the house
+      ev.preventDefault();
+      if (down && !ev.repeat) this._keyFocus(colour);
+      return;
+    }
     const ok = k === "Enter" || k === " " || k === "Select";
     if (this._kCtl) {                                 // the side panel has the control
       if (!(dir || ok || back)) return;
@@ -1175,6 +1185,24 @@ class GungorsFloorCard extends HTMLElement {
     else {
       const b = this._dock.querySelector(`.btn[data-mode="${p.mode}"]`);
       if (b) b.click();
+    }
+    this._keyApply();
+  }
+
+  // a colour key: move the remote's focus to the dock, the side panel's control or the house
+  _keyFocus(colour) {
+    const nav = this._navigable();
+    clearTimeout(this._kPress && this._kPress.timer);
+    this._kPress = null;
+    if (this._fly) { this._fly = null; this._buildDock(); }
+    if (colour === "red") { this._kCtl = false; this._kz = "dock"; if (!DOCK_KEYS.includes(this._kd)) this._kd = this._mode; }
+    else {
+      if (nav.length) {
+        this._kz = "house";
+        if (!nav.includes(this._kid)) this._kid = this._keyNearest(nav, "middle");
+      }
+      this._keyApply();                               // the panel follows the pick before its control is taken
+      this._kCtl = colour === "blue" && this._kz === "house" && !!(this._sideCtl() || {}).ctl;
     }
     this._keyApply();
   }
