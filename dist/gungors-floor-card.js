@@ -181,7 +181,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.40.0";
+const CARD_VERSION = "1.41.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -256,7 +256,8 @@ const HUD = { w: 176, h: 100, cy: 56 };
 // slant at x = FAM.l steeply down to the bottom (FAM.ls px down per px right) and from the slant at x = FAM.u to the
 // right edge (FAM.us down per px right). Cells: left, middle (the corner, largest), top; each shows one portrait
 // (config family: [left, middle, top]), an image made for the cell's box (famGeo().cells[i].box).
-const FAM = { h: 340, top: 100, left: 120, l: 115, u: 165, ls: 2, us: 0.35 };
+// scale: the panel is drawn at this size, from the picture's bottom-right corner (geometry and images stay as designed)
+const FAM = { h: 340, top: 100, left: 120, l: 115, u: 165, ls: 2, us: 0.35, scale: 0.5 };
 const famGeo = () => {
   const H = FAM.h, dy = H - FAM.left, W = Math.round(FAM.top + dy / Math.SQRT1_2), sx = W - FAM.top;
   const sy = (x) => dy * (1 - x / sx);                                   // the slant through (0, dy) and (sx, 0)
@@ -1570,7 +1571,7 @@ class GungorsFloorCard extends HTMLElement {
       return `<div class="fc" style="-webkit-clip-path:polygon(${clip});clip-path:polygon(${clip})"><img src="${imgs[i]}" alt=""
                 style="${rectCss({ x: c.box.x.toFixed(1), y: c.box.y.toFixed(1), w: c.box.w.toFixed(1), h: c.box.h.toFixed(1) })}"></div>`;
     }).join("");
-    return `<div class="fam${this._mode === "sun" ? " off" : ""}" style="left:${this._page.W - g.W}px;top:${R - g.H}px;width:${g.W}px;height:${g.H}px">${cells}
+    return `<div class="fam${this._mode === "sun" ? " off" : ""}" style="left:${this._page.W - g.W}px;top:${R - g.H}px;width:${g.W}px;height:${g.H}px;-webkit-transform:scale(${FAM.scale});transform:scale(${FAM.scale});-webkit-transform-origin:100% 100%;transform-origin:100% 100%">${cells}
       <svg viewBox="0 0 ${g.W} ${g.H}"><polyline points="${g.edge.map(P).join(" ")}"/><path d="${g.div.map(([a, b]) => `M${P(a)}L${P(b)}`).join("")}"/></svg></div>`;
   }
 
