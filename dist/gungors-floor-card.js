@@ -19,8 +19,10 @@
  * have arrived (the card sends {gf: "fed"} after its first full feed); the dock appears when the page
  * reports {gf: "shown"}. No tap highlight anywhere in the card (mobile would flash it on every tap).
  *
- * Dock: bottom left, three straight edges (horizontal top: the floor button, opening the floors upwards; slanted along the render's axis: the modes; vertical right: the wall cut button, opening the cuts to the right) with the buttons heating, sun, cameras, vacuum, floor and wall cut over a screen (clock,
- * date and the mode's rows). Heating: the climates of the floor shown (page type climate, in the order of
+ * Dock: bottom left, three straight edges: a horizontal top with the floor cell (opens the floors upwards), a slanted
+ * edge along the render's axis with the buttons heating, sun, cameras and vacuum, and a vertical right edge with the
+ * wall cut cell (opens the cuts to the right); the cells are cut off by mitres. The rest is a screen with the mode's
+ * rows, open to the picture's edges. The clock, date and place (room / camera) sit in a cell top left. Heating: the climates of the floor shown (page type climate, in the order of
  * `entities`), one room at a time; each press of the heating button (while the heating mode is on) goes on
  * to the next room (after the last, back to the first; a floor switch starts at the first). The screen shows
  * the room's name, current and target temperature, hvac mode and action, and humidity (the entity's
@@ -173,7 +175,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.37.0";
+const CARD_VERSION = "1.38.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -223,6 +225,8 @@ const POP_CSS = `
 `;
 
 // icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
+const floorLabel = (id) => { const m = /(\d+)/.exec(id); return m ? "Kat " + m[1] : id; };
+const rectCss = (r) => `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px`;
 const floorIcon = (id) => { const m = /(\d+)/.exec(id); return m && +m[1] <= 3 ? "mdi:home-floor-" + m[1] : "mdi:layers"; };
 
 // border colour of a climate on the page (docs/page.md), unless YAML colours it
@@ -234,9 +238,13 @@ const STREAM_WAIT_MS = 45000;
 // the dock, bottom left: three straight edges, a horizontal top (DOCK.top px long, the floor button), a slanted
 // edge along the render's world Y axis (slope 0.707 as model.json camera y = [-24.27, -17.16] shows it; the mode
 // buttons) and a vertical right edge (DOCK.side px long, the wall cut button). Its height is dock_radius.
-const DOCK = { top: 220, side: 150, slope: Math.SQRT1_2 };
+const DOCK = { top: 120, side: 120, slope: Math.SQRT1_2, gap: 76, cellH: 95, cellW: 100 };
 // the dock's screen: left / bottom offset and size in page px
-const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
+const SCREEN = { pad: 14, list: 72, row: 32 };   // gap to the cells, list top, row height
+// the clock, date and place shown (room / camera): a cell in the picture's top left corner (page px), open to the
+// picture's edges, its bottom-right corner cut along the render's world X axis (from the right edge at cy, slope 0.707)
+const HUD = { w: 230, h: 130, cy: 70 };
+const HUD_PTS = [[0, 0], [HUD.w, 0], [HUD.w, HUD.cy], [HUD.w - (HUD.h - HUD.cy) / Math.SQRT1_2, HUD.h], [0, HUD.h]];
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
 // corner is cut along the render's world Y axis (from the left edge at SIDE.y down to the bottom at SIDE.x), parallel
 // to the house walls: model.json camera y = [-24.27, -17.16] px per metre, slope 17.16 / 24.27 = 0.707 (116 / 164). Plain CSS (no inset, no flex gap): TV browsers are old.
@@ -286,9 +294,24 @@ const CSS = `${SIDE_CSS}
   .rim{overflow:visible;pointer-events:none;filter:drop-shadow(0 0 10px rgba(90,180,255,.6))}
   .rim polygon{fill:none;stroke:#a8dcff;stroke-width:4;stroke-linejoin:round}
   .rim polygon.in{stroke:rgba(160,215,255,.35);stroke-width:2}
-  .btn.opt{z-index:2}
-  .btn.opt .lb{position:absolute;bottom:-17px;left:50%;transform:translateX(-50%);white-space:nowrap;font:bold 12px "Segoe UI",Roboto,Arial,sans-serif;
-               color:#e8f4ff;text-shadow:0 1px 3px #000}
+  .rim .div{fill:none;stroke:rgba(168,220,255,.75);stroke-width:2}
+  .cell{position:absolute;box-sizing:border-box;margin:0;padding:0;border:0;border-radius:6px;background:transparent;color:#fff;
+        cursor:pointer;outline:none;pointer-events:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;
+        font:bold 13px "Segoe UI",Roboto,Arial,sans-serif;letter-spacing:.5px;text-transform:uppercase;text-shadow:0 1px 3px #000;
+        transition:background .15s,box-shadow .15s}
+  .cell ha-icon{--mdc-icon-size:38px;margin-bottom:4px;filter:drop-shadow(0 1px 1px rgba(0,0,0,.6))}
+  .cell:hover,.cell.open{background:rgba(160,215,255,.16)}
+  .cell.single{opacity:.5;cursor:default}
+  .cell.floor{padding-right:22px}
+  .cell.cut{padding-top:44px}
+  .cell.kf{background:rgba(190,230,255,.34)}
+  .cell.kf ha-icon{filter:drop-shadow(0 0 6px #fff)}
+  .cell.opt.kf ha-icon{filter:none}
+  .cell.opt{z-index:2;border:2px solid #a8dcff;border-radius:8px;background:linear-gradient(#1d6fd6,#0b3a86);
+            box-shadow:0 4px 10px rgba(0,0,0,.55)}
+  .cell.opt ha-icon{--mdc-icon-size:30px;margin-bottom:2px}
+  .cell.opt.active{border-color:#ffd66b;color:#ffd66b}
+  .cell.opt.kf{box-shadow:0 0 0 3px #fff,0 0 22px #fff}
   .btn{position:absolute;width:70px;height:70px;border-radius:50%;padding:0;cursor:pointer;outline:none;pointer-events:auto;
        border:3px solid #e6f5ff;color:#fff;display:flex;align-items:center;justify-content:center;
        background:radial-gradient(circle at 35% 28%,#e4f4ff 0 7%,#63b4ff 20%,#1a67d1 58%,#0a2f70 100%);
@@ -298,13 +321,23 @@ const CSS = `${SIDE_CSS}
   .btn.active{border-color:#ffd66b;box-shadow:0 4px 10px rgba(0,0,0,.55),0 0 20px rgba(255,214,107,.85)}
   .btn.single{opacity:.5;cursor:default}
   .btn.kf{transform:scale(1.12);border-color:#fff;box-shadow:0 0 0 3px #fff,0 0 26px #fff}
-  .screen{position:absolute;left:${SCREEN.x}px;bottom:${SCREEN.y}px;width:${SCREEN.w}px;height:${SCREEN.h}px;box-sizing:border-box;padding:8px 10px;pointer-events:auto;
-          border-radius:16px;border:2px solid #5fb4ff;background:linear-gradient(#051a40,#0a2c63);
-          box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 10px rgba(80,170,255,.4);display:flex;flex-direction:column}
-  .screen.act{cursor:pointer;transition:box-shadow .15s,border-color .15s}
-  .screen.act:hover{border-color:var(--hc);box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 6px var(--hc),0 0 22px var(--hc)}
-  .screen.kf{border-color:var(--hc,#fff);box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 0 2px #fff,0 0 22px var(--hc,#fff)}
-  .top{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid rgba(95,180,255,.35);padding-bottom:3px}
+  .screen{position:absolute;box-sizing:border-box;padding:0;pointer-events:auto;background:linear-gradient(#051a40,#0a2c63)}
+  .screen .sedge{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none}
+  .screen .sedge polyline{fill:none;stroke:#5fb4ff;stroke-width:4;stroke-linejoin:round}
+  .screen.act{cursor:pointer}
+  .screen.act:hover .sedge polygon{stroke:var(--hc)}
+  .screen.kf .sedge polygon{stroke:#fff;stroke-width:6}
+  .screen .list{position:absolute;left:18px;right:8px;top:${SCREEN.list}px;bottom:14px}
+  .screen .row{height:${SCREEN.row}px;font-size:17px}
+  .screen .row .val{font-size:17px}
+  .screen .row ha-icon{--mdc-icon-size:22px}
+  .hud{position:absolute;box-sizing:border-box;padding:14px 0 0 24px;pointer-events:none;background:linear-gradient(#051a40,#0a2c63)}
+  .hud .sedge{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible}
+  .hud .sedge polyline{fill:none;stroke:#5fb4ff;stroke-width:4;stroke-linejoin:round}
+  .hud span{display:block;position:relative}
+  .hud .clock{font-size:44px;line-height:1}
+  .hud .date{font-size:16px;margin-top:4px}
+  .hud .title{font-size:15px;margin:6px 0 0}
   .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
   .date{font-size:12px;color:#9fcfff}
   .title{font-size:12px;letter-spacing:1px;color:#ffd66b;margin:4px 0 2px;text-transform:uppercase}
@@ -948,24 +981,39 @@ class GungorsFloorCard extends HTMLElement {
         : m.id === "heating" ? "heating" + (single ? ": no climates" : " (next room)")
         : m.id === "camera" ? "cameras" + (single ? ": none on this floor" : " (next camera)")
         : m.id === "vacuum" ? "vacuum" + (single ? ": none on this floor" : " (map)") : m.title;
+      if (isFloor || isCut) {                                     // a cell in its corner, its choice in words
+        const r = g.cell[m.id], lb = isFloor ? floorLabel(this._floor) : CUT_LABEL[this._cut];
+        const poly = r.pts.map(([x, y]) => `${x.toFixed(1)}px ${y.toFixed(1)}px`).join(",");
+        return `<button class="cell ${m.id}${single ? " single" : ""}${this._fly === m.id ? " open" : ""}" data-mode="${m.id}" title="${title}"
+                  style="${rectCss(r)};-webkit-clip-path:polygon(${poly});clip-path:polygon(${poly})"><ha-icon icon="${icon}"></ha-icon><span>${lb}</span></button>`;
+      }
       return `<button class="btn${single ? " single" : ""}" data-mode="${m.id}" title="${title}"
                 style="left:${c[0] - 35}px;top:${c[1] - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
     }).join("");
-    const opts = this._flyOpts().map((o, i) => `<button class="btn opt${o.on ? " active" : ""}" data-opt="${i}" title="${o.title}"
-                style="left:${o.c[0] - 35}px;top:${o.c[1] - 35}px"><ha-icon icon="${o.icon}"></ha-icon><span class="lb">${o.label}</span></button>`).join("");
+    const opts = this._flyOpts().map((o, i) => `<button class="cell opt${o.on ? " active" : ""}" data-opt="${i}" title="${o.title}"
+                style="${rectCss(o.r)}"><ha-icon icon="${o.icon}"></ha-icon><span>${o.label}</span></button>`).join("");
+    const fc = g.cell.floor, cc = g.cell.cut;
+    const P = (r, i) => `${(r.x + r.pts[i][0]).toFixed(1)},${(r.y + r.pts[i][1]).toFixed(1)}`;
+    const lines = `<path class="div" d="M${P(fc, 1)}L${P(fc, 2)}L${P(fc, 3)}M${P(cc, 0)}L${P(cc, 3)}L${P(cc, 2)}"/>`;
     const pts = (k) => g.poly.map(([x, y]) => `${(x * k).toFixed(1)},${(R - (R - y) * k).toFixed(1)}`).join(" ");
     d.style.width = g.W + "px"; d.style.height = R + "px";
     d.style.top = ((H - R) / H * 100) + "%";
+    const hudClip = HUD_PTS.map(([x, y]) => `${x.toFixed(1)}px ${y.toFixed(1)}px`).join(",");
+    const hudEdge = HUD_PTS.slice(1).map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");   // no top / left line
     const clip = g.poly.map(([x, y]) => `${x}px ${y}px`).join(",");
     d.innerHTML = `<div class="disc" style="-webkit-clip-path:polygon(${clip});clip-path:polygon(${clip})"></div>
-      <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon class="in" points="${pts(0.7)}"/><polygon points="${pts(1)}"/></svg>${btns}${opts}
-      <div class="screen"><div class="top"><span class="clock"></span><span class="date"></span></div>
-        <div class="title"></div><div class="list"></div></div>`;
-    d.querySelectorAll(".btn.opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
-    d.querySelectorAll(".btn[data-mode]").forEach((b) => b.addEventListener("click", () => {
+      <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon points="${pts(1)}"/>${lines}</svg>${btns}${opts}
+      <style>${g.rows}</style>
+      <div class="screen" style="${rectCss(g.screen)};-webkit-clip-path:polygon(${g.screen.clip});clip-path:polygon(${g.screen.clip})">
+        <svg class="sedge" viewBox="0 0 ${g.screen.w} ${g.screen.h}"><polyline points="${g.screen.edge}"/></svg><div class="list"></div></div>
+      <div class="hud" style="top:${R - H}px;left:0;width:${HUD.w}px;height:${HUD.h}px;-webkit-clip-path:polygon(${hudClip});clip-path:polygon(${hudClip})">
+        <svg class="sedge" viewBox="0 0 ${HUD.w} ${HUD.h}"><polyline points="${hudEdge}"/></svg>
+        <span class="clock"></span><span class="date"></span><span class="title"></span></div>`;
+    d.querySelectorAll(".opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
+    d.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
       const fm = b.dataset.mode;
       if (fm === "floor" || fm === "cut") {                                   // open / close its choices
-        if (b.classList.contains("single")) return;
+        if (b.classList.contains("single")) return;   // one floor / one cut: nothing to choose
         this._fly = this._fly === fm ? null : fm;
         this._flyI = Math.max(0, this._flyOpts().findIndex((o) => o.on));
         this._buildDock();
@@ -1018,12 +1066,33 @@ class GungorsFloorCard extends HTMLElement {
     const R = this._config.dock_radius, dy = R - DOCK.side, dx = dy / DOCK.slope, W = Math.round(DOCK.top + dx);
     const L = Math.hypot(dx, dy), u = [dx / L, dy / L], n = [-u[1], u[0]], at = {};
     ["vacuum", "camera", "sun", "heating"].forEach((id, k) => {   // evenly along the slanted edge, centred on it
-      const t = (k + 0.6) / 4.5 * L;                              // clear of the corners' buttons
+      const t = L / 2 - 10 + (k - 1.5) * DOCK.gap;                // a group in the middle of the edge, clear of the cells
       at[id] = [DOCK.top + u[0] * t + n[0] * 46, u[1] * t + n[1] * 46];
     });
-    at.floor = [DOCK.top / 2, 46];                                // the middle of the top edge
-    at.cut = [W - 46, R - DOCK.side / 2];                         // the middle of the right edge
-    return { W, at, poly: [[0, 0], [DOCK.top, 0], [W, dy], [W, R], [0, R]] };
+    // the corner cells: bands along the top and the right edge (DOCK.cellH / cellW deep), cut off from the slanted
+    // edge by mitres (the lines halving the corners' angles), like the corners of a frame; pts: in the cell's box
+    const off = (b, s) => [DOCK.top + n[0] * b + u[0] * s, n[1] * b + u[1] * s];   // inside the slanted edge by b
+    const mt = off(DOCK.cellH, DOCK.cellH * (1 - n[1]) / u[1]);                     // top mitre's inner end (y = cellH)
+    const mx = W - DOCK.cellW, mb = off(DOCK.cellW, (mx - DOCK.top - n[0] * DOCK.cellW) / u[0]);  // right mitre's (x = mx)
+    const cell = {
+      floor: { x: 0, y: 0, w: DOCK.top, h: DOCK.cellH, pts: [[0, 0], [DOCK.top, 0], [mt[0], DOCK.cellH], [0, DOCK.cellH]] },
+      cut: { x: mx, y: dy, w: DOCK.cellW, h: R - dy, pts: [[DOCK.cellW, 0], [DOCK.cellW, R - dy], [0, R - dy], [0, mb[1] - dy]] },
+    };
+    // the screen: all the room left, under the floor cell, beside the cut cell (SCREEN.pad apart), open to the
+    // picture's left and bottom edges; its slanted edge (parallel to the dock's) runs from under the floor cell's
+    // inner corner to beside the cut cell's, so the corners line up; its list rows end at that slant (row k: rm[k])
+    const p = SCREEN.pad, sx = 0, sw = mx - p, ya = mb[1] - (sw - mt[0]) * DOCK.slope, sy = ya, sh = R - sy;
+    const slantX = (y) => mt[0] + (y - sy) / DOCK.slope;
+    const xa = mt[0], yb = mb[1];
+    const sp = [[0, 0], [xa - sx, 0], [sw, Math.max(0, yb - sy)], [sw, sh], [0, sh]];
+    let rows = "";
+    for (let k = 0; k < 10; k++) {
+      const rm = Math.max(0, Math.ceil(sx + sw - 8 - (slantX(sy + SCREEN.list + k * SCREEN.row) - 10)));
+      if (rm) rows += `.list .row:nth-child(${k + 1}){margin-right:${rm}px}`;
+    }
+    const screen = { x: sx, y: sy, w: sw, h: sh, clip: sp.map(([x, y]) => `${x.toFixed(1)}px ${y.toFixed(1)}px`).join(","),
+      edge: sp.slice(0, 4).map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ") };   // no left / bottom line
+    return { W, at, cell, screen, rows, poly: [[0, 0], [DOCK.top, 0], [W, dy], [W, R], [0, R]] };
   }
 
   // the choices of the open floor / cut button: floors upwards from the floor button, cuts rightwards from the cut button
@@ -1031,9 +1100,9 @@ class GungorsFloorCard extends HTMLElement {
     if (!this._fly || !this._page) return [];
     const g = this._dockGeo();
     if (this._fly === "floor") return this._floors.map((f, i) => ({ v: i, on: i === this._fi, icon: floorIcon(f.floor),
-      label: f.floor, title: f.floor, c: [g.at.floor[0], -62 - i * 92] }));
+      label: floorLabel(f.floor), title: f.floor, r: { x: 0, y: -(i + 1) * 62, w: DOCK.top, h: 56 } }));
     return this._page.cuts.map((c, i) => ({ v: c, on: c === this._cut, icon: CUT_ICON[c], label: CUT_LABEL[c],
-      title: CUT_TITLE[c], c: [g.W + 50 + i * 92, g.at.cut[1]] }));
+      title: CUT_TITLE[c], r: { x: g.W + 8 + i * 108, y: g.cell.cut.y, w: DOCK.cellW, h: DOCK.side } }));
   }
 
   _flyPick(i) {
@@ -1183,7 +1252,7 @@ class GungorsFloorCard extends HTMLElement {
     if (act && act.action === "more-info") return;    // Home Assistant's dialog: the remote could not close it (Fully keeps back)
     if (p.id) this._run(p.id, which);
     else {
-      const b = this._dock.querySelector(`.btn[data-mode="${p.mode}"]`);
+      const b = this._dock.querySelector(`[data-mode="${p.mode}"]`);
       if (b) b.click();
     }
     this._keyApply();
@@ -1227,9 +1296,9 @@ class GungorsFloorCard extends HTMLElement {
     if (this._kid !== this._sideId) { this._kCtl = false; this._sideId = this._kid; this._sidePending = null; }
     this._sideRender();
     const fly = this._fly && this._kz === "dock";
-    this._dock.querySelectorAll(".btn[data-mode], .screen").forEach((el) =>
+    this._dock.querySelectorAll("[data-mode], .screen").forEach((el) =>
       el.classList.toggle("kf", this._kz === "dock" && !fly && (el.dataset.mode || "screen") === this._kd));
-    this._dock.querySelectorAll(".btn.opt").forEach((el) => el.classList.toggle("kf", fly && +el.dataset.opt === this._flyI));
+    this._dock.querySelectorAll(".opt").forEach((el) => el.classList.toggle("kf", fly && +el.dataset.opt === this._flyI));
     let hl = null;
     if (this._kz === "house") hl = this._kid;
     else if (this._kz === "dock" && this._kd === "screen") { const r = this._selected(); hl = r ? r.id : null; }
@@ -1438,7 +1507,8 @@ class GungorsFloorCard extends HTMLElement {
   // the page's link line from the screen to the room / camera shown, else none
   _link() {
     const r = this._selected(), H = this._page.H;
-    const rect = [SCREEN.x, H - SCREEN.y - SCREEN.h, SCREEN.x + SCREEN.w, H - SCREEN.y];
+    const S = this._dockGeo().screen, R = this._config.dock_radius;
+    const rect = [S.x, H - R + S.y, S.x + S.w, H - R + S.y + S.h];
     const msg = r ? { gf: "link", id: r.id, rect } : { gf: "link", id: null };
     const key = JSON.stringify(msg);
     if (key === this._linkSent) return;
@@ -1471,7 +1541,7 @@ class GungorsFloorCard extends HTMLElement {
     const d = this._dock, list = d.querySelector(".list");
     if (!list || !this._hass || !this._page) return;
     const mode = this._mode, hass = this._hass;
-    let rows = [], title = this._floor + " · " + DOCK_MODES.find((m) => m.id === mode).title, room = null;
+    let rows = [], title = DOCK_MODES.find((m) => m.id === mode).title, room = null;
     if (mode === "heating") {
       room = this._climate();
       const n = this._climates().length;
@@ -1483,7 +1553,7 @@ class GungorsFloorCard extends HTMLElement {
         const hum = hs && Number.isFinite(Number(hs.state)) ? Number(hs.state) : a.current_humidity;
         const on = st.state !== "off" && st.state !== "unavailable" && st.state !== "unknown";
         const act = a.hvac_action || (on ? "-" : "");
-        title = this._floor + " · " + (e.name || id.replace(/_climate$/, "")) + (n > 1 ? " " + (this._room + 1) + "/" + n : "");
+        title = (e.name || id.replace(/_climate$/, "")) + (n > 1 ? " " + (this._room + 1) + "/" + n : "");
         rows = [{ icon: "mdi:thermometer", label: "current", value: t(a.current_temperature) },
                 { icon: "mdi:target", label: "target", value: on ? t(a.temperature) : "-" },
                 { icon: act === "heating" ? "mdi:fire" : on ? "mdi:radiator" : "mdi:radiator-off", on: act === "heating",
@@ -1497,7 +1567,7 @@ class GungorsFloorCard extends HTMLElement {
       else {
         const { id, e } = room, st = hass.states[e.entity], ms = e.motion && hass.states[e.motion];
         const live = st.state === "streaming";
-        title = this._floor + " · " + (e.name || id) + (n > 1 ? " " + (this._cam + 1) + "/" + n : "");
+        title = (e.name || id) + (n > 1 ? " " + (this._cam + 1) + "/" + n : "");
         rows = [{ icon: live ? "mdi:cctv" : "mdi:cctv-off", on: live, label: "state", value: st.state }];
         if (ms) rows.push({ icon: ms.state === "on" ? "mdi:motion-sensor" : "mdi:motion-sensor-off", on: ms.state === "on",
                             label: "motion", value: ms.state === "on" ? "yes" : "no" });
@@ -1512,7 +1582,7 @@ class GungorsFloorCard extends HTMLElement {
         const { id, e } = room, st = hass.states[e.entity], a = st.attributes;
         const busy = st.state === "cleaning" || st.state === "returning";
         const area = a["vacuum_extend.cleaning_area"];
-        title = this._floor + " · " + (e.name || id) + (n > 1 ? " " + (this._vac + 1) + "/" + n : "");
+        title = (e.name || id) + (n > 1 ? " " + (this._vac + 1) + "/" + n : "");
         rows = [{ icon: busy ? "mdi:robot-vacuum" : "mdi:robot-vacuum-off", on: busy, label: "state", value: st.state },
                 { icon: "mdi:information-outline", label: "status", value: a["vacuum.status_desc"] || a.status || "-" },
                 { icon: "mdi:battery", label: "battery", value: a.battery_level != null ? a.battery_level + "%" : "-" },
