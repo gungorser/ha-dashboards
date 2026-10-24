@@ -75,7 +75,10 @@
  * Side panel (lights): a light picked with the remote shows top right on the picture: its icon in its colour,
  * name, floor, state (on with its brightness, off, unreachable) and a brightness bar. A long OK on it moves the
  * control into the panel (its frame turns gold) instead of its hold action: left / right brightness -/+ 10 %
- * (below 10 %: off), OK on / off, back gives the control back to the house. Other types keep their hold action.
+ * (below 10 %: off), OK on / off, up / down (or back, if the browser passes it on; Fully Kiosk keeps it for its
+ * settings) give the control back to the house; 15 s without a key too, and 60 s drop the pick. Other types keep
+ * their hold action, except more-info: from the remote it does nothing (Home Assistant's dialog could not be
+ * closed without back). A popup of the card closes with OK or back.
  * Channel up / down (page up / down): the next floor. Nothing shows until a key is pressed; a touch or click
  * drops it. Keys in a text field or a Home Assistant dialog (more-info) are left to it.
  *
@@ -164,7 +167,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.30.0";
+const CARD_VERSION = "1.31.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -295,6 +298,7 @@ const CSS = `${SIDE_CSS}
 `;
 
 const HOLD_MS = 500;
+const KEY_CTL_MS = 15000, KEY_IDLE_MS = 60000;
 // kiosk mode (the TV): the dashboard opened with ?kiosk; the remote control and its side panel exist only there
 const kioskUrl = () => /[?&]kiosk(?:[=&]|$)/.test(location.search);
 let KIOSK = kioskUrl();
@@ -964,8 +968,9 @@ class GungorsFloorCard extends HTMLElement {
     if (!this.isConnected || !this._page || !this._hass) return;
     if (!KIOSK && !(KIOSK = kioskUrl())) return;    // not the kiosk: the remote is off
     const k = ev.key, back = k === "Escape" || k === "GoBack" || k === "BrowserBack";
-    if (this._pop) {                                  // a popup is open: back closes it, other keys are its own
-      if (down && back) { ev.preventDefault(); this._closePopup(); }
+    if (this._pop) {                                  // a popup is open: back or OK closes it, other keys are its own
+      const okKey = k === "Enter" || k === " " || k === "Select";
+      if (down && !ev.repeat && (back || okKey)) { ev.preventDefault(); this._closePopup(); }
       return;
     }
     const path = ev.composedPath ? ev.composedPath() : [];
@@ -977,7 +982,7 @@ class GungorsFloorCard extends HTMLElement {
       if (!(dir || ok || back)) return;
       ev.preventDefault();
       if (!down || (ev.repeat && !dir)) return;
-      if (back) this._kCtl = false;                   // back: the control goes back to the house
+      if (back || dir && dir[1]) this._kCtl = false;  // back (Fully may keep it) or up / down: control back to the house
       else if (ok) this._sideToggle();
       else if (dir[0]) this._sideStep(dir[0]);
       this._keyApply();
@@ -1075,6 +1080,8 @@ class GungorsFloorCard extends HTMLElement {
 
   _keyAct(p, which) {
     if (p.id && which === "hold" && this._kz === "house" && this._sideLight()) { this._kCtl = true; this._keyApply(); return; }
+    const e = p.id && this._map.get(p.id), act = e && e[which + "_action"];
+    if (act && act.action === "more-info") return;    // Home Assistant's dialog: the remote could not close it (Fully keeps back)
     if (p.id) this._run(p.id, which);
     else {
       const b = this._dock.querySelector(`.btn[data-mode="${p.mode}"]`);
@@ -1093,6 +1100,11 @@ class GungorsFloorCard extends HTMLElement {
   // the pick shown: a white ring on the dock's button / screen, a glow on the page (the entity, or the screen's room)
   _keyApply() {
     if (!this._dock) return;
+    // idle: the panel's control ends after KEY_CTL_MS, the pick after KEY_IDLE_MS without a key (the TV goes back to just showing)
+    clearTimeout(this._kIdle);
+    if (this._kz) this._kIdle = setTimeout(() => {
+      if (this._kCtl) { this._kCtl = false; this._keyApply(); } else this._keyDrop();
+    }, this._kCtl ? KEY_CTL_MS : KEY_IDLE_MS);
     if (this._kz !== "house" || this._kCtl && !this._sideLight()) this._kCtl = false;
     if (this._kid !== this._sideId) { this._kCtl = false; this._sideId = this._kid; this._sidePending = null; }
     this._sideRender();
@@ -1171,7 +1183,7 @@ class GungorsFloorCard extends HTMLElement {
     const stroke = ctl ? "#ffd66b" : "#a8dcff";
     const k = (t) => `<span class="k">${t}</span>`;
     const hint = ctl
-      ? (dims ? `<span>${k("◀")}${k("▶")}parlaklık ±10</span>` : "") + `<span>${k("OK")}aç/kapa &nbsp;${k("↩")}bitir</span>`
+      ? (dims ? `<span>${k("◀")}${k("▶")}parlaklık ±10</span>` : "") + `<span>${k("OK")}aç/kapa &nbsp;${k("▲")}${k("▼")}bitir</span>`
       : `<span>${k("OK")}aç/kapa</span><span>uzun ${k("OK")}kontrol</span>`;
     el.innerHTML = `<div class="bg"></div>
       <svg class="edge" viewBox="0 0 ${SIDE.w} ${SIDE.h}"><polygon points="1.5,1.5 ${SIDE.w - 1.5},1.5 ${SIDE.w - 1.5},${SIDE.h - 1.5} 135,${SIDE.h - 1.5} 1.5,117"
