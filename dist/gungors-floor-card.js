@@ -172,7 +172,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.33.0";
+const CARD_VERSION = "1.34.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -227,9 +227,9 @@ const STREAM_WAIT_MS = 45000;
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
-// corner is cut along the house's long axis (from the left edge at SIDE.y down to the bottom at SIDE.x: slope ~0.58,
-// as the renders' walls run), so it stays off the house. Plain CSS (no inset, no flex gap): TV browsers are old.
-const SIDE = { ref: 1065, w: 295, h: 200, y: 95, x: 180 };
+// corner is cut along the render's world Y axis (from the left edge at SIDE.y down to the bottom at SIDE.x), parallel
+// to the house walls: model.json camera y = [-24.27, -17.16] px per metre, slope 17.16 / 24.27 = 0.707 (116 / 164). Plain CSS (no inset, no flex gap): TV browsers are old.
+const SIDE = { ref: 1065, w: 295, h: 200, y: 84, x: 164 };
 const BULB = "M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z";
 const SIDE_POLY = `0 0,100% 0,100% 100%,${SIDE.x}px 100%,0 ${SIDE.y}px`;
 const SIDE_CSS = `
