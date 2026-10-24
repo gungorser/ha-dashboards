@@ -238,7 +238,7 @@ const STREAM_WAIT_MS = 45000;
 // buttons) and a vertical right edge (DOCK.side px long, the wall cut button). Its height is dock_radius.
 const DOCK = { top: 120, side: 120, slope: Math.SQRT1_2, gap: 76, cellH: 95, cellW: 100 };
 // the dock's screen: left / bottom offset and size in page px
-const SCREEN = { pad: 14, band: 93, list: 92, row: 29 };   // margin, slanted edge to screen, list top, row height
+const SCREEN = { pad: 14, list: 92, row: 29 };   // gap to the cells, list top, row height
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
 // corner is cut along the render's world Y axis (from the left edge at SIDE.y down to the bottom at SIDE.x), parallel
 // to the house walls: model.json camera y = [-24.27, -17.16] px per metre, slope 17.16 / 24.27 = 0.707 (116 / 164). Plain CSS (no inset, no flex gap): TV browsers are old.
@@ -321,14 +321,14 @@ const CSS = `${SIDE_CSS}
   .screen.act{cursor:pointer}
   .screen.act:hover .sedge polygon{stroke:var(--hc)}
   .screen.kf .sedge polygon{stroke:#fff;stroke-width:6}
-  .screen .top{position:absolute;left:24px;top:10px}
+  .screen .top{position:absolute;left:24px;top:16px}
   .screen .top span{display:block}
-  .screen .title{position:absolute;left:24px;top:58px;margin:0}
+  .screen .title{position:absolute;left:24px;top:62px;margin:0}
   .screen .list{position:absolute;left:18px;right:8px;top:${SCREEN.list}px;bottom:14px}
   .screen .row{height:${SCREEN.row}px;font-size:16px}
   .screen .row .val{font-size:16px}
   .screen .row ha-icon{--mdc-icon-size:22px}
-  .screen .clock{font-size:29px}
+  .screen .clock{font-size:26px}
   .screen .title{top:66px;font-size:13px}
   .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
   .date{font-size:12px;color:#9fcfff}
@@ -1066,11 +1066,12 @@ class GungorsFloorCard extends HTMLElement {
       floor: { x: 0, y: 0, w: DOCK.top, h: DOCK.cellH, pts: [[0, 0], [DOCK.top, 0], [mt[0], DOCK.cellH], [0, DOCK.cellH]] },
       cut: { x: mx, y: dy, w: DOCK.cellW, h: R - dy, pts: [[DOCK.cellW, 0], [DOCK.cellW, R - dy], [0, R - dy], [0, mb[1] - dy]] },
     };
-    // the screen: all the room left, under the floor cell, beside the cut cell, its top right SCREEN.band inside the
-    // slanted edge (under the buttons); its list rows end at that slant (row k: right margin rm[k])
-    const p = SCREEN.pad, sb = SCREEN.band, sx = 0, sy = DOCK.cellH + p, sw = mx - p - sx, sh = R - sy;   // open to the picture's edges
-    const slantX = (y) => DOCK.top + n[0] * sb + u[0] * (y - n[1] * sb) / u[1];
-    const ya = sy, xa = Math.min(sx + sw, slantX(ya)), yb = Math.min(sy + sh, n[1] * sb + u[1] * (sx + sw - DOCK.top - n[0] * sb) / u[0]);
+    // the screen: all the room left, under the floor cell, beside the cut cell (SCREEN.pad apart), open to the
+    // picture's left and bottom edges; its slanted edge (parallel to the dock's) runs from under the floor cell's
+    // inner corner to beside the cut cell's, so the corners line up; its list rows end at that slant (row k: rm[k])
+    const p = SCREEN.pad, sx = 0, sw = mx - p, ya = mb[1] - (sw - mt[0]) * DOCK.slope, sy = ya, sh = R - sy;
+    const slantX = (y) => mt[0] + (y - sy) / DOCK.slope;
+    const xa = mt[0], yb = mb[1];
     const sp = [[0, 0], [xa - sx, 0], [sw, Math.max(0, yb - sy)], [sw, sh], [0, sh]];
     let rows = "";
     for (let k = 0; k < 10; k++) {
