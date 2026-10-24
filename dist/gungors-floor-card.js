@@ -80,7 +80,7 @@
  * to press: a white frame only), yellow the family panel (bottom right: left / right / up / down walk its
  * portraits, OK runs the portrait's tap_action, left past the first goes to the house), blue the side panel's
  * control (top right). The same key again takes the pick back to the middle of the house. OK on floor / cut opens its choices: up / down (floors) or left / right (cuts) walk them, OK picks, any other arrow closes. Back / Esc closes a popup, else leaves the dock, else drops the pick.
- * Side panel: the entity picked with the remote shows top right on the picture (its bottom-left corner cut
+ * Side panel: the entity picked with the remote shows in the top-right corner of the picture (open to its top and right edges; its bottom-left corner cut
  * along the house's long axis): icon in its colour, name, floor, its state in plain words and, where it has one, a bar. A long OK moves
  * the control into the panel (its frame turns gold) instead of the hold action, for the types that have one:
  *   light    left / right brightness -/+ 10 % (below 10 %: off), OK on / off
@@ -186,7 +186,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.43.0";
+const CARD_VERSION = "1.44.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -282,7 +282,7 @@ const SIDE = { ref: 1065, w: 295, h: 200, y: 84, x: 164 };
 const BULB = "M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z";
 const SIDE_POLY = `0 0,100% 0,100% 100%,${SIDE.x}px 100%,0 ${SIDE.y}px`;
 const SIDE_CSS = `
-  .side{position:absolute;right:1.5%;top:3%;width:${SIDE.w}px;height:${SIDE.h}px;transform-origin:100% 0;pointer-events:none;
+  .side{position:absolute;right:0;top:0;width:${SIDE.w}px;height:${SIDE.h}px;transform-origin:100% 0;pointer-events:none;
         font-family:"Segoe UI",Roboto,Arial,sans-serif;color:#e8f4ff;display:none;line-height:1.15}
   .side.on{display:block}
   .side .ck{position:absolute;top:0;right:0;width:0;height:0;border-style:solid;border-width:0 22px 22px 0;
@@ -1525,7 +1525,7 @@ class GungorsFloorCard extends HTMLElement {
       ? (i.step ? `<div>${k("◀")}${k("▶")}${i.adj}</div>` : "") + (i.ok ? `<div>${k("OK")}${i.okWord}</div>` : "") + `<div>${k("▲")}${k("▼")}bitir</div>`
       : (this._sideTapWord(it) ? `<div>${k("OK")}${this._sideTapWord(it)}</div>` : "") + (i.ctl ? `<div>uzun ${k("OK")}kontrol</div>` : "");
     el.innerHTML = `<div class="bg"></div>
-      <svg class="edge" viewBox="0 0 ${W} ${H}"><polygon points="1.5,1.5 ${W - 1.5},1.5 ${W - 1.5},${H - 1.5} ${SIDE.x},${H - 1.5} 1.5,${SIDE.y}"
+      <svg class="edge" viewBox="0 0 ${W} ${H}"><polyline points="1.5,0 1.5,${SIDE.y} ${SIDE.x},${H - 1.5} ${W},${H - 1.5}"
         fill="none" stroke="${stroke}" stroke-width="${ctl ? 3 : 2}" style="filter:drop-shadow(0 0 ${ctl ? 9 : 5}px ${stroke})"/></svg>
       <div class="ico">${i.svg ? `<svg viewBox="0 0 24 24"><path d="${i.svg}"/></svg>` : `<ha-icon icon="${i.icon}"></ha-icon>`}</div>
       <div class="name"></div><div class="sub">${fl} · ${i.kind}</div>
