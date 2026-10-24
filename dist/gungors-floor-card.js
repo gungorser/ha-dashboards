@@ -65,12 +65,17 @@
  * Qibla: in the sun mode of the dock the card asks the page for its qibla compass ({gf: "compass", value:
  * true}; false in the other modes), drawn by the page bottom right.
  *
- * Remote (TV remote, keyboard): the arrow keys pick the entities of the floor shown by where they are on the
+ * Remote (TV remote, keyboard), only in kiosk mode (the page was opened with ?kiosk in its URL, as the TV's
+ * Fully Kiosk does; elsewhere keys do nothing and nothing below shows): the arrow keys pick the entities of the floor shown by where they are on the
  * picture (the boxes of the page's "ready"; only entities with a tap or hold action), the one picked glows as if
  * hovered ({gf: "highlight", id}). OK / Enter: a short press is its tap, a long one (HOLD_MS) its hold. Left or
  * down with nothing further that way goes into the dock (at the button of the mode shown): up / down walk its
  * buttons and its screen, OK presses them (the screen: tap / hold of the room, camera or vacuum shown, which
  * glows), right goes back to the house. Back / Esc closes a popup, else leaves the dock, else drops the pick.
+ * Side panel (lights): a light picked with the remote shows top right on the picture: its icon in its colour,
+ * name, floor, state (on with its brightness, off, unreachable) and a brightness bar. A long OK on it moves the
+ * control into the panel (its frame turns gold) instead of its hold action: left / right brightness -/+ 10 %
+ * (below 10 %: off), OK on / off, back gives the control back to the house. Other types keep their hold action.
  * Channel up / down (page up / down): the next floor. Nothing shows until a key is pressed; a touch or click
  * drops it. Keys in a text field or a Home Assistant dialog (more-info) are left to it.
  *
@@ -159,7 +164,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.29.0";
+const CARD_VERSION = "1.30.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -213,7 +218,37 @@ const OTHER_COLOR = "#2ecc5a";
 const STREAM_WAIT_MS = 45000;
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
-const CSS = `
+// the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card
+const SIDE = { ref: 1065, w: 305, h: 212 };
+const BULB = "M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z";
+const SIDE_CSS = `
+  .side{position:absolute;right:1.4%;top:3%;width:${SIDE.w}px;height:${SIDE.h}px;transform-origin:100% 0;pointer-events:none;
+        font-family:"Segoe UI",Roboto,Arial,sans-serif;color:#e8f4ff;display:none}
+  .side.on{display:block}
+  .side .bg{position:absolute;inset:0;clip-path:polygon(0 0,100% 0,100% 100%,135px 100%,0 117px);
+            background:linear-gradient(160deg,rgba(13,59,133,.92),rgba(7,29,69,.94) 70%)}
+  .side svg.edge{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+  .side .ico{position:absolute;left:16px;top:16px;width:58px;height:58px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+             background:radial-gradient(circle at 50% 45%,var(--lc) 0 30%,rgba(255,200,90,.25) 60%,rgba(0,0,0,0) 72%)}
+  .side .ico svg{width:38px;height:38px;fill:#fff8e6;filter:drop-shadow(0 0 8px var(--lc))}
+  .side.off .ico{background:radial-gradient(circle,#24406e 0 55%,transparent 72%)}
+  .side.off .ico svg{fill:#7f9ac4;filter:none}
+  .side .name{position:absolute;left:86px;right:12px;top:16px;font-size:26px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .side .sub{position:absolute;left:87px;top:50px;font-size:12px;color:#9fcfff;letter-spacing:.5px;text-transform:uppercase}
+  .side .state{position:absolute;right:22px;top:84px;text-align:right}
+  .side .w{font-size:13px;letter-spacing:1px;text-transform:uppercase;color:#ffd66b}
+  .side .v{font:bold 40px Consolas,"Courier New",monospace;color:#7dff9a;text-shadow:0 0 10px rgba(125,255,154,.6);line-height:1;min-height:40px}
+  .side.off .v{color:#6f93c2;text-shadow:none;font-size:30px}
+  .side .bar{position:absolute;left:118px;right:22px;top:146px;height:14px;border-radius:7px;background:#0a2a5e;border:1px solid #3b6fb0}
+  .side .fill{position:absolute;left:0;top:0;bottom:0;width:var(--b);border-radius:7px;background:linear-gradient(90deg,#8a5a1a,var(--lc));box-shadow:0 0 10px var(--lc)}
+  .side .knob{position:absolute;top:50%;left:var(--b);width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;background:#fff;box-shadow:0 0 0 3px var(--lc),0 0 12px var(--lc)}
+  .side.off .bar{opacity:.35}.side.off .fill,.side.off .knob{display:none}
+  .side .arr{display:none;position:absolute;top:138px;font-size:22px;color:#ffd66b;text-shadow:0 0 8px #ffd66b}
+  .side.ctl .arr{display:block}
+  .side .hint{position:absolute;right:14px;bottom:8px;font-size:12px;color:#cfe6ff;display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+  .side .k{display:inline-block;min-width:18px;padding:1px 5px;border-radius:5px;border:1px solid #8cc4ff;background:#0d3b85;text-align:center;font-size:11px;color:#fff;margin-right:3px}
+`;
+const CSS = `${SIDE_CSS}
   ha-card{overflow:hidden;background:#3a3a3a;-webkit-tap-highlight-color:transparent;
           display:flex;align-items:center;justify-content:center}
   .wrap{position:relative;flex:none;width:100%;aspect-ratio:16 / 9}
@@ -260,6 +295,9 @@ const CSS = `
 `;
 
 const HOLD_MS = 500;
+// kiosk mode (the TV): the dashboard opened with ?kiosk; the remote control and its side panel exist only there
+const kioskUrl = () => /[?&]kiosk(?:[=&]|$)/.test(location.search);
+let KIOSK = kioskUrl();
 const pad = (n) => String(n).padStart(2, "0");
 // "HH:MM" of a moment in Home Assistant's time zone (hass.config.time_zone), not the browser's
 const hhmm = (d, tz) => {
@@ -393,6 +431,7 @@ class GungorsFloorCard extends HTMLElement {
     this._renderList(false);
     if (this._pop && this._pop.update) this._pop.update();
     if (this._pop && this._pop.card) this._pop.card.hass = hass;
+    this._sideRender();
   }
 
   connectedCallback() {
@@ -422,10 +461,11 @@ class GungorsFloorCard extends HTMLElement {
   _build() {
     this._root = this.attachShadow({ mode: "open" });
     this._root.innerHTML = `<style>${CSS}</style>
-      <ha-card><div class="err" hidden></div><div class="wrap"><iframe title="floor"></iframe><div class="dock"></div></div></ha-card>`;
+      <ha-card><div class="err" hidden></div><div class="wrap"><iframe title="floor"></iframe><div class="dock"></div><div class="side"></div></div></ha-card>`;
     this._wrap = this._root.querySelector(".wrap");
     this._frame = this._root.querySelector("iframe");
     this._dock = this._root.querySelector(".dock");
+    this._side = this._root.querySelector(".side");
     this._errBox = this._root.querySelector(".err");
     this._onMessage = (e) => { if (e.source === this._frame.contentWindow) this._message(e.data); };
     window.addEventListener("message", this._onMessage);
@@ -922,6 +962,7 @@ class GungorsFloorCard extends HTMLElement {
   // ------------------------------------------------------------------ remote (TV remote, keyboard)
   _key(ev, down) {
     if (!this.isConnected || !this._page || !this._hass) return;
+    if (!KIOSK && !(KIOSK = kioskUrl())) return;    // not the kiosk: the remote is off
     const k = ev.key, back = k === "Escape" || k === "GoBack" || k === "BrowserBack";
     if (this._pop) {                                  // a popup is open: back closes it, other keys are its own
       if (down && back) { ev.preventDefault(); this._closePopup(); }
@@ -932,6 +973,16 @@ class GungorsFloorCard extends HTMLElement {
       return;                                         // a text field or a Home Assistant dialog has the keys
     const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
     const ok = k === "Enter" || k === " " || k === "Select";
+    if (this._kCtl) {                                 // the side panel has the control
+      if (!(dir || ok || back)) return;
+      ev.preventDefault();
+      if (!down || (ev.repeat && !dir)) return;
+      if (back) this._kCtl = false;                   // back: the control goes back to the house
+      else if (ok) this._sideToggle();
+      else if (dir[0]) this._sideStep(dir[0]);
+      this._keyApply();
+      return;
+    }
     const floorKey = k === "ChannelUp" || k === "ChannelDown" || k === "PageUp" || k === "PageDown";
     if (!down) {                                      // key up: only OK's, a tap unless it became a hold
       const p = this._kPress;
@@ -1023,6 +1074,7 @@ class GungorsFloorCard extends HTMLElement {
   }
 
   _keyAct(p, which) {
+    if (p.id && which === "hold" && this._kz === "house" && this._sideLight()) { this._kCtl = true; this._keyApply(); return; }
     if (p.id) this._run(p.id, which);
     else {
       const b = this._dock.querySelector(`.btn[data-mode="${p.mode}"]`);
@@ -1034,12 +1086,16 @@ class GungorsFloorCard extends HTMLElement {
   _keyDrop() {
     if (!this._kz) return;
     this._kz = null;
+    this._kCtl = false;
     this._keyApply();
   }
 
   // the pick shown: a white ring on the dock's button / screen, a glow on the page (the entity, or the screen's room)
   _keyApply() {
     if (!this._dock) return;
+    if (this._kz !== "house" || this._kCtl && !this._sideLight()) this._kCtl = false;
+    if (this._kid !== this._sideId) { this._kCtl = false; this._sideId = this._kid; this._sidePending = null; }
+    this._sideRender();
     this._dock.querySelectorAll(".btn, .screen").forEach((el) =>
       el.classList.toggle("kf", this._kz === "dock" && (el.dataset.mode || "screen") === this._kd));
     let hl = null;
@@ -1048,6 +1104,85 @@ class GungorsFloorCard extends HTMLElement {
     if (hl === (this._hlSent || null)) return;
     this._hlSent = hl;
     this._post({ gf: "highlight", id: hl });
+  }
+
+  // ------------------------------------------------------------------ side panel (a light picked with the remote)
+  // the light picked in the house, else null: {id, e, st}
+  _sideLight() {
+    if (this._kz !== "house" || !this._kid || !this._page || this._page.entities.get(this._kid) !== "light") return null;
+    const e = this._map.get(this._kid), st = e && this._hass.states[e.entity];
+    return st ? { id: this._kid, e, st } : null;
+  }
+
+  // brightness 0-100 shown: a value just asked for wins for a while, else the light's own
+  _sidePct(st) {
+    const p = this._sidePending;
+    if (p && Date.now() - p.t < 4000) return p.v;
+    if (st.state !== "on") return 0;
+    const b = st.attributes.brightness;
+    return b == null ? 100 : Math.round(b / 2.55);
+  }
+
+  _sideDims(st) {
+    const modes = st.attributes.supported_color_modes;
+    return !Array.isArray(modes) || modes.some((m) => m !== "onoff");
+  }
+
+  _sideStep(d) {
+    const L = this._sideLight();
+    if (!L || !this._sideDims(L.st) || L.st.state === "unavailable") return;
+    const cur = this._sidePct(L.st), v = Math.max(0, Math.min(100, Math.round((cur + d * 10) / 10) * 10));
+    if (v === cur) return;
+    this._sidePending = { v, t: Date.now() };
+    if (v === 0) this._hass.callService("light", "turn_off", { entity_id: L.e.entity });
+    else this._hass.callService("light", "turn_on", { entity_id: L.e.entity, brightness_pct: v });
+  }
+
+  _sideToggle() {
+    const L = this._sideLight();
+    if (!L || L.st.state === "unavailable") return;
+    this._sidePending = null;
+    this._hass.callService("light", L.st.state === "on" ? "turn_off" : "turn_on", { entity_id: L.e.entity });
+  }
+
+  _sideRender() {
+    const el = this._side;
+    if (!el) return;
+    const L = this._hass && this._sideLight();
+    if (!L) { el.classList.remove("on"); this._sideSig = null; return; }
+    const { id, e, st } = L, a = st.attributes, na = st.state === "unavailable" || st.state === "unknown";
+    const p = this._sidePending, pend = p && Date.now() - p.t < 4000;
+    if (pend && (p.v === 0 ? st.state === "off" : st.state === "on" && Math.abs(this._sidePct({ state: "on", attributes: a }) - p.v) <= 1))
+      this._sidePending = null;                       // the light got there
+    const pct = na ? 0 : this._sidePct(st), on = !na && pct > 0;
+    const rgb = Array.isArray(a.rgb_color) ? a.rgb_color : null;
+    const lc = rgb ? `rgb(${rgb.join(",")})` : "#ffc35a";
+    const fl = /^kat(\d+)$/i.test(this._floor) ? "Kat " + this._floor.slice(3) : this._floor;
+    const name = e.name || a.friendly_name || id;
+    const ctl = !!this._kCtl, dims = this._sideDims(st);
+    const sig = JSON.stringify([id, name, fl, na, on, pct, lc, ctl, dims]);
+    el.classList.add("on");
+    if (sig === this._sideSig) return;
+    this._sideSig = sig;
+    el.classList.toggle("off", !on);
+    el.classList.toggle("ctl", ctl);
+    el.style.setProperty("--lc", lc);
+    el.style.setProperty("--b", pct + "%");
+    const stroke = ctl ? "#ffd66b" : "#a8dcff";
+    const k = (t) => `<span class="k">${t}</span>`;
+    const hint = ctl
+      ? (dims ? `<span>${k("◀")}${k("▶")}parlaklık ±10</span>` : "") + `<span>${k("OK")}aç/kapa &nbsp;${k("↩")}bitir</span>`
+      : `<span>${k("OK")}aç/kapa</span><span>uzun ${k("OK")}kontrol</span>`;
+    el.innerHTML = `<div class="bg"></div>
+      <svg class="edge" viewBox="0 0 ${SIDE.w} ${SIDE.h}"><polygon points="1.5,1.5 ${SIDE.w - 1.5},1.5 ${SIDE.w - 1.5},${SIDE.h - 1.5} 135,${SIDE.h - 1.5} 1.5,117"
+        fill="none" stroke="${stroke}" stroke-width="${ctl ? 3 : 2}" style="filter:drop-shadow(0 0 ${ctl ? 10 : 6}px ${stroke})"/></svg>
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="${BULB}"/></svg></div>
+      <div class="name"></div><div class="sub">${fl} · lamba</div>
+      <div class="state"><div class="w">${na ? "ulaşılamıyor" : on ? "açık" : "kapalı"}</div><div class="v">${on && dims ? "%" + pct : "—"}</div></div>
+      ${dims ? `<div class="bar"><div class="fill"></div><div class="knob"></div></div>
+      <div class="arr" style="left:97px">◀</div><div class="arr" style="right:-2px">▶</div>` : ""}
+      <div class="hint">${hint}</div>`;
+    el.querySelector(".name").textContent = name;
   }
 
   // rooms of the heating mode: the floor's climates mapped to Home Assistant, in the order of the YAML
@@ -1124,6 +1259,7 @@ class GungorsFloorCard extends HTMLElement {
   _fitDock() {
     if (!this._page) return;
     this._dock.style.transform = `scale(${this._wrap.clientWidth / this._page.W})`;
+    this._side.style.transform = `scale(${this._wrap.clientWidth / SIDE.ref})`;
   }
 
   _clock() {
