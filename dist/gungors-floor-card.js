@@ -238,7 +238,7 @@ const STREAM_WAIT_MS = 45000;
 // buttons) and a vertical right edge (DOCK.side px long, the wall cut button). Its height is dock_radius.
 const DOCK = { top: 120, side: 120, slope: Math.SQRT1_2, gap: 76, cellH: 95, cellW: 100 };
 // the dock's screen: left / bottom offset and size in page px
-const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
+const SCREEN = { pad: 14, band: 93, list: 92, row: 29 };   // margin, slanted edge to screen, list top, row height
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
 // corner is cut along the render's world Y axis (from the left edge at SIDE.y down to the bottom at SIDE.x), parallel
 // to the house walls: model.json camera y = [-24.27, -17.16] px per metre, slope 17.16 / 24.27 = 0.707 (116 / 164). Plain CSS (no inset, no flex gap): TV browsers are old.
@@ -315,13 +315,21 @@ const CSS = `${SIDE_CSS}
   .btn.active{border-color:#ffd66b;box-shadow:0 4px 10px rgba(0,0,0,.55),0 0 20px rgba(255,214,107,.85)}
   .btn.single{opacity:.5;cursor:default}
   .btn.kf{transform:scale(1.12);border-color:#fff;box-shadow:0 0 0 3px #fff,0 0 26px #fff}
-  .screen{position:absolute;left:${SCREEN.x}px;bottom:${SCREEN.y}px;width:${SCREEN.w}px;height:${SCREEN.h}px;box-sizing:border-box;padding:8px 10px;pointer-events:auto;
-          border-radius:16px;border:2px solid #5fb4ff;background:linear-gradient(#051a40,#0a2c63);
-          box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 10px rgba(80,170,255,.4);display:flex;flex-direction:column}
-  .screen.act{cursor:pointer;transition:box-shadow .15s,border-color .15s}
-  .screen.act:hover{border-color:var(--hc);box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 6px var(--hc),0 0 22px var(--hc)}
-  .screen.kf{border-color:var(--hc,#fff);box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 0 2px #fff,0 0 22px var(--hc,#fff)}
-  .top{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid rgba(95,180,255,.35);padding-bottom:3px}
+  .screen{position:absolute;box-sizing:border-box;padding:0;pointer-events:auto;background:linear-gradient(#051a40,#0a2c63)}
+  .screen .sedge{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none}
+  .screen .sedge polygon{fill:none;stroke:#5fb4ff;stroke-width:4;stroke-linejoin:round}
+  .screen.act{cursor:pointer}
+  .screen.act:hover .sedge polygon{stroke:var(--hc)}
+  .screen.kf .sedge polygon{stroke:#fff;stroke-width:6}
+  .screen .top{position:absolute;left:12px;top:10px}
+  .screen .top span{display:block}
+  .screen .title{position:absolute;left:12px;top:58px;margin:0}
+  .screen .list{position:absolute;left:6px;right:8px;top:${SCREEN.list}px;bottom:6px}
+  .screen .row{height:${SCREEN.row}px;font-size:16px}
+  .screen .row .val{font-size:16px}
+  .screen .row ha-icon{--mdc-icon-size:22px}
+  .screen .clock{font-size:29px}
+  .screen .title{top:66px;font-size:13px}
   .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
   .date{font-size:12px;color:#9fcfff}
   .title{font-size:12px;letter-spacing:1px;color:#ffd66b;margin:4px 0 2px;text-transform:uppercase}
@@ -985,7 +993,9 @@ class GungorsFloorCard extends HTMLElement {
     const clip = g.poly.map(([x, y]) => `${x}px ${y}px`).join(",");
     d.innerHTML = `<div class="disc" style="-webkit-clip-path:polygon(${clip});clip-path:polygon(${clip})"></div>
       <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon points="${pts(1)}"/>${lines}</svg>${btns}${opts}
-      <div class="screen"><div class="top"><span class="clock"></span><span class="date"></span></div>
+      <style>${g.rows}</style>
+      <div class="screen" style="${rectCss(g.screen)};-webkit-clip-path:polygon(${g.screen.clip});clip-path:polygon(${g.screen.clip})">
+        <svg class="sedge" viewBox="0 0 ${g.screen.w} ${g.screen.h}"><polygon points="${g.screen.edge}"/></svg><div class="top"><span class="clock"></span><span class="date"></span></div>
         <div class="title"></div><div class="list"></div></div>`;
     d.querySelectorAll(".opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
     d.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
@@ -1056,7 +1066,20 @@ class GungorsFloorCard extends HTMLElement {
       floor: { x: 0, y: 0, w: DOCK.top, h: DOCK.cellH, pts: [[0, 0], [DOCK.top, 0], [mt[0], DOCK.cellH], [0, DOCK.cellH]] },
       cut: { x: mx, y: dy, w: DOCK.cellW, h: R - dy, pts: [[DOCK.cellW, 0], [DOCK.cellW, R - dy], [0, R - dy], [0, mb[1] - dy]] },
     };
-    return { W, at, cell, poly: [[0, 0], [DOCK.top, 0], [W, dy], [W, R], [0, R]] };
+    // the screen: all the room left, under the floor cell, beside the cut cell, its top right SCREEN.band inside the
+    // slanted edge (under the buttons); its list rows end at that slant (row k: right margin rm[k])
+    const p = SCREEN.pad, sb = SCREEN.band, sx = p, sy = DOCK.cellH + p, sw = mx - p - sx, sh = R - p - sy;
+    const slantX = (y) => DOCK.top + n[0] * sb + u[0] * (y - n[1] * sb) / u[1];
+    const ya = sy, xa = Math.min(sx + sw, slantX(ya)), yb = Math.min(sy + sh, n[1] * sb + u[1] * (sx + sw - DOCK.top - n[0] * sb) / u[0]);
+    const sp = [[0, 0], [xa - sx, 0], [sw, Math.max(0, yb - sy)], [sw, sh], [0, sh]];
+    let rows = "";
+    for (let k = 0; k < 10; k++) {
+      const rm = Math.max(0, Math.ceil(sx + sw - 8 - (slantX(sy + SCREEN.list + k * SCREEN.row) - 10)));
+      if (rm) rows += `.list .row:nth-child(${k + 1}){margin-right:${rm}px}`;
+    }
+    const screen = { x: sx, y: sy, w: sw, h: sh, clip: sp.map(([x, y]) => `${x.toFixed(1)}px ${y.toFixed(1)}px`).join(","),
+      edge: sp.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ") };
+    return { W, at, cell, screen, rows, poly: [[0, 0], [DOCK.top, 0], [W, dy], [W, R], [0, R]] };
   }
 
   // the choices of the open floor / cut button: floors upwards from the floor button, cuts rightwards from the cut button
@@ -1471,7 +1494,8 @@ class GungorsFloorCard extends HTMLElement {
   // the page's link line from the screen to the room / camera shown, else none
   _link() {
     const r = this._selected(), H = this._page.H;
-    const rect = [SCREEN.x, H - SCREEN.y - SCREEN.h, SCREEN.x + SCREEN.w, H - SCREEN.y];
+    const S = this._dockGeo().screen, R = this._config.dock_radius;
+    const rect = [S.x, H - R + S.y, S.x + S.w, H - R + S.y + S.h];
     const msg = r ? { gf: "link", id: r.id, rect } : { gf: "link", id: null };
     const key = JSON.stringify(msg);
     if (key === this._linkSent) return;
