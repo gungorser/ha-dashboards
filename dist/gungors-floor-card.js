@@ -30,8 +30,9 @@
  * `humidity` sensor, else its current_humidity attribute); a tap / hold on the screen runs the room's
  * tap_action / hold_action; hovered, it glows in the room's border colour together with the room
  * and its link on the page. The card asks the page for a link
- * line from the screen to the room's radiator ({gf: "link", id, rect: the screen in page px}; {gf: "link",
- * id: null} in the other modes), drawn along the world axes and glowing only while hovered.
+ * line from the screen to the room's radiator ({gf: "link", id, rect: the screen in page px, poly: the dock's
+ * outline in page px, so the line comes out of the dock's edge}; {gf: "link", id: null} in the other modes),
+ * drawn along the world axes and glowing only while hovered.
  *
  * Cameras: the camera mode of the dock (the cctv button) shows the cameras of the floor shown (page type
  * camera, in the order of `entities`), one at a time; each press of the button (while the camera mode is
@@ -180,7 +181,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.39.1";
+const CARD_VERSION = "1.40.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -348,8 +349,8 @@ const CSS = `${SIDE_CSS}
   .screen .sedge{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none}
   .screen .sedge polyline{fill:none;stroke:#5fb4ff;stroke-width:4;stroke-linejoin:round}
   .screen.act{cursor:pointer}
-  .screen.act:hover .sedge polygon{stroke:var(--hc)}
-  .screen.kf .sedge polygon{stroke:#fff;stroke-width:6}
+  .screen.act:hover .sedge polyline{stroke:var(--hc);filter:drop-shadow(0 0 6px var(--hc))}
+  .screen.kf .sedge polyline{stroke:#fff;stroke-width:6}
   .screen .list{position:absolute;left:18px;right:8px;top:${SCREEN.list}px;bottom:14px}
   .screen .row{height:${SCREEN.row}px;font-size:17px}
   .screen .row .val{font-size:17px}
@@ -1546,9 +1547,11 @@ class GungorsFloorCard extends HTMLElement {
   // the page's link line from the screen to the room / camera shown, else none
   _link() {
     const r = this._selected(), H = this._page.H;
-    const S = this._dockGeo().screen, R = this._config.dock_radius;
+    const g = this._dockGeo(), S = g.screen, R = this._config.dock_radius;
     const rect = [S.x, H - R + S.y, S.x + S.w, H - R + S.y + S.h];
-    const msg = r ? { gf: "link", id: r.id, rect } : { gf: "link", id: null };
+    // the screen lies inside the dock, so the line leaves from the dock's outline (its edges inside the picture)
+    const poly = g.poly.map(([x, y]) => [Math.round(x * 10) / 10, Math.round((H - R + y) * 10) / 10]);
+    const msg = r ? { gf: "link", id: r.id, rect, poly } : { gf: "link", id: null };
     const key = JSON.stringify(msg);
     if (key === this._linkSent) return;
     this._linkSent = key;
