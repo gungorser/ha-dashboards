@@ -19,7 +19,7 @@
  * have arrived (the card sends {gf: "fed"} after its first full feed); the dock appears when the page
  * reports {gf: "shown"}. No tap highlight anywhere in the card (mobile would flash it on every tap).
  *
- * Dock: a quarter disc bottom left with the buttons heating, sun, cameras, vacuum, floor and wall cut over a screen (clock,
+ * Dock: a quarter disc bottom left (an ellipse: a circle on the floor in the render's perspective) with the buttons heating, sun, cameras, vacuum, floor and wall cut over a screen (clock,
  * date and the mode's rows). Heating: the climates of the floor shown (page type climate, in the order of
  * `entities`), one room at a time; each press of the heating button (while the heating mode is on) goes on
  * to the next room (after the last, back to the first; a floor switch starts at the first). The screen shows
@@ -95,7 +95,7 @@
  *   type: custom:gungors-floor-card
  *   base: /local/gungors_floor/       # optional
  *   sun: sun.sun                      # required
- *   dock_radius: 370                  # optional: size (page px) of the control dock in the bottom-left corner
+ *   dock_radius: 370                  # optional: height (page px) of the control dock in the bottom-left corner (width x sqrt 2)
  *   cut: front                        # optional: wall cut shown first: none, front (default: the outer walls
  *                                     #   facing the camera cut down) or all (every wall cut down)
  *   lighting:                         # optional: brightness of the house's world light (the page's
@@ -172,7 +172,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.33.0";
+const CARD_VERSION = "1.35.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -224,12 +224,30 @@ const CLIMATE_COLOR = "#e62823";
 const OTHER_COLOR = "#2ecc5a";
 // how long the live view waits for a camera to start streaming
 const STREAM_WAIT_MS = 45000;
+// the dock is a circle on the floor seen by the render's camera (model.json camera x = [24.27, -17.16] px per
+// metre, y = [-24.27, -17.16]): an ellipse 24.27 / 17.16 = sqrt(2) times as wide as high
+const DOCK_STRETCH = Math.SQRT2;
+// n points spread evenly by arc length on the ellipse (a, b) between the parametric angles t0 and t1 (degrees)
+function ellipseSpots(a, b, t0, t1, n) {
+  const pt = (t) => [a * Math.cos(t * Math.PI / 180), b * Math.sin(t * Math.PI / 180)], len = [0];
+  for (let t = t0 + 0.5; t <= t1 + 1e-9; t += 0.5) {
+    const p = pt(t), q = pt(t - 0.5);
+    len.push(len[len.length - 1] + Math.hypot(p[0] - q[0], p[1] - q[1]));
+  }
+  const total = len[len.length - 1];
+  return Array.from({ length: n }, (_, i) => {
+    const want = total * i / (n - 1);
+    let k = 0;
+    while (k < len.length - 1 && len[k + 1] < want) k++;
+    return pt(t0 + k * 0.5);
+  });
+}
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { x: 14, y: 14, w: 206, h: 182 };
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
-// corner is cut along the house's long axis (from the left edge at SIDE.y down to the bottom at SIDE.x: slope ~0.58,
-// as the renders' walls run), so it stays off the house. Plain CSS (no inset, no flex gap): TV browsers are old.
-const SIDE = { ref: 1065, w: 295, h: 200, y: 95, x: 180 };
+// corner is cut along the render's world Y axis (from the left edge at SIDE.y down to the bottom at SIDE.x), parallel
+// to the house walls: model.json camera y = [-24.27, -17.16] px per metre, slope 17.16 / 24.27 = 0.707 (116 / 164). Plain CSS (no inset, no flex gap): TV browsers are old.
+const SIDE = { ref: 1065, w: 295, h: 200, y: 84, x: 164 };
 const BULB = "M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z";
 const SIDE_POLY = `0 0,100% 0,100% 100%,${SIDE.x}px 100%,0 ${SIDE.y}px`;
 const SIDE_CSS = `
@@ -271,7 +289,7 @@ const CSS = `${SIDE_CSS}
   .dock.shown{visibility:visible}
   .disc,.gloss{position:absolute;left:0;bottom:0;box-sizing:border-box}
   .disc{width:100%;height:100%;border-top-right-radius:100%;pointer-events:auto;
-        background:radial-gradient(circle at 0% 100%,#071d45 0 52%,#0d3b85 64%,#1d6fd6 80%,#3b95f0 89%,#0b3a86 100%);
+        background:radial-gradient(ellipse farthest-corner at 0% 100%,#071d45 0 52%,#0d3b85 64%,#1d6fd6 80%,#3b95f0 89%,#0b3a86 100%);
         border-top:4px solid #a8dcff;border-right:4px solid #a8dcff;
         box-shadow:0 0 22px rgba(90,180,255,.55),inset 0 0 30px rgba(0,20,60,.6)}
   .gloss{width:70%;height:70%;border-top-right-radius:100%;border-top:2px solid rgba(160,215,255,.35);
@@ -907,11 +925,13 @@ class GungorsFloorCard extends HTMLElement {
 
   // ------------------------------------------------------------------ dock (quarter-disc control panel, bottom left)
   _buildDock() {
-    const R = this._config.dock_radius, d = this._dock, H = this._page.H;
+    // a quarter of a circle lying on the floor, as the render's camera shows it: an ellipse dock_radius high and
+    // DOCK_STRETCH times as wide; the buttons sit evenly (by arc length) on a ring 46 px inside its rim
+    const R = this._config.dock_radius, A = Math.round(R * DOCK_STRETCH), d = this._dock, H = this._page.H;
     if (!DOCK_MODES.some((m) => m.id === this._mode && m.icon)) this._mode = "heating";
-    const rb = R - 46, angles = [6, 22, 38, 54, 70, 86];
+    const ra = A - 46, rb = R - 46, pos = ellipseSpots(ra, rb, 6, 86, DOCK_MODES.length);
     const btns = DOCK_MODES.map((m, i) => {
-      const a = angles[i] * Math.PI / 180, isFloor = m.id === "floor", isCut = m.id === "cut";
+      const isFloor = m.id === "floor", isCut = m.id === "cut";
       const single = isFloor ? this._floors.length < 2 : isCut ? this._page.cuts.length < 2
         : m.id === "heating" ? !this._climates().length : m.id === "camera" ? !this._cameras().length
         : m.id === "vacuum" && !this._vacuums().length;
@@ -921,9 +941,9 @@ class GungorsFloorCard extends HTMLElement {
         : m.id === "camera" ? "cameras" + (single ? ": none on this floor" : " (next camera)")
         : m.id === "vacuum" ? "vacuum" + (single ? ": none on this floor" : " (map)") : m.title;
       return `<button class="btn${single ? " single" : ""}" data-mode="${m.id}" title="${title}"
-                style="left:${rb * Math.cos(a) - 35}px;top:${R - rb * Math.sin(a) - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
+                style="left:${pos[i][0] - 35}px;top:${R - pos[i][1] - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
     }).join("");
-    d.style.width = d.style.height = R + "px";
+    d.style.width = A + "px"; d.style.height = R + "px";
     d.style.top = ((H - R) / H * 100) + "%";
     d.innerHTML = `<div class="disc"></div><div class="gloss"></div>${btns}
       <div class="screen"><div class="top"><span class="clock"></span><span class="date"></span></div>
