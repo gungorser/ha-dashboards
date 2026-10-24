@@ -239,8 +239,10 @@ const STREAM_WAIT_MS = 45000;
 const DOCK = { top: 120, side: 120, slope: Math.SQRT1_2, gap: 76, cellH: 95, cellW: 100 };
 // the dock's screen: left / bottom offset and size in page px
 const SCREEN = { pad: 14, list: 72, row: 32 };   // gap to the cells, list top, row height
-// the clock, date and place shown (floor · room / camera): the picture's top left corner, page px
-const HUD = { x: 24, y: 18 };
+// the clock, date and place shown (room / camera): a cell in the picture's top left corner (page px), open to the
+// picture's edges, its bottom-right corner cut along the render's world X axis (from the right edge at cy, slope 0.707)
+const HUD = { w: 230, h: 130, cy: 70 };
+const HUD_PTS = [[0, 0], [HUD.w, 0], [HUD.w, HUD.cy], [HUD.w - (HUD.h - HUD.cy) / Math.SQRT1_2, HUD.h], [0, HUD.h]];
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
 // corner is cut along the render's world Y axis (from the left edge at SIDE.y down to the bottom at SIDE.x), parallel
 // to the house walls: model.json camera y = [-24.27, -17.16] px per metre, slope 17.16 / 24.27 = 0.707 (116 / 164). Plain CSS (no inset, no flex gap): TV browsers are old.
@@ -327,8 +329,10 @@ const CSS = `${SIDE_CSS}
   .screen .row{height:${SCREEN.row}px;font-size:17px}
   .screen .row .val{font-size:17px}
   .screen .row ha-icon{--mdc-icon-size:22px}
-  .hud{position:absolute;pointer-events:none;text-shadow:0 1px 4px rgba(0,0,0,.8)}
-  .hud span{display:block}
+  .hud{position:absolute;box-sizing:border-box;padding:14px 0 0 24px;pointer-events:none;background:linear-gradient(#051a40,#0a2c63)}
+  .hud .sedge{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible}
+  .hud .sedge polyline{fill:none;stroke:#5fb4ff;stroke-width:4;stroke-linejoin:round}
+  .hud span{display:block;position:relative}
   .hud .clock{font-size:44px;line-height:1}
   .hud .date{font-size:16px;margin-top:4px}
   .hud .title{font-size:15px;margin:6px 0 0}
@@ -992,14 +996,17 @@ class GungorsFloorCard extends HTMLElement {
     const pts = (k) => g.poly.map(([x, y]) => `${(x * k).toFixed(1)},${(R - (R - y) * k).toFixed(1)}`).join(" ");
     d.style.width = g.W + "px"; d.style.height = R + "px";
     d.style.top = ((H - R) / H * 100) + "%";
+    const hudClip = HUD_PTS.map(([x, y]) => `${x.toFixed(1)}px ${y.toFixed(1)}px`).join(",");
+    const hudEdge = HUD_PTS.slice(1).map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");   // no top / left line
     const clip = g.poly.map(([x, y]) => `${x}px ${y}px`).join(",");
     d.innerHTML = `<div class="disc" style="-webkit-clip-path:polygon(${clip});clip-path:polygon(${clip})"></div>
       <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon points="${pts(1)}"/>${lines}</svg>${btns}${opts}
       <style>${g.rows}</style>
       <div class="screen" style="${rectCss(g.screen)};-webkit-clip-path:polygon(${g.screen.clip});clip-path:polygon(${g.screen.clip})">
         <svg class="sedge" viewBox="0 0 ${g.screen.w} ${g.screen.h}"><polyline points="${g.screen.edge}"/></svg><div class="list"></div></div>
-      <div class="hud" style="top:${HUD.y - (H - R)}px;left:${HUD.x}px"><span class="clock"></span><span class="date"></span>
-        <span class="title"></span></div>`;
+      <div class="hud" style="top:${R - H}px;left:0;width:${HUD.w}px;height:${HUD.h}px;-webkit-clip-path:polygon(${hudClip});clip-path:polygon(${hudClip})">
+        <svg class="sedge" viewBox="0 0 ${HUD.w} ${HUD.h}"><polyline points="${hudEdge}"/></svg>
+        <span class="clock"></span><span class="date"></span><span class="title"></span></div>`;
     d.querySelectorAll(".opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
     d.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
       const fm = b.dataset.mode;
