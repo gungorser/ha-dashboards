@@ -317,14 +317,14 @@ const CSS = `${SIDE_CSS}
   .btn.kf{transform:scale(1.12);border-color:#fff;box-shadow:0 0 0 3px #fff,0 0 26px #fff}
   .screen{position:absolute;box-sizing:border-box;padding:0;pointer-events:auto;background:linear-gradient(#051a40,#0a2c63)}
   .screen .sedge{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none}
-  .screen .sedge polygon{fill:none;stroke:#5fb4ff;stroke-width:4;stroke-linejoin:round}
+  .screen .sedge polyline{fill:none;stroke:#5fb4ff;stroke-width:4;stroke-linejoin:round}
   .screen.act{cursor:pointer}
   .screen.act:hover .sedge polygon{stroke:var(--hc)}
   .screen.kf .sedge polygon{stroke:#fff;stroke-width:6}
-  .screen .top{position:absolute;left:12px;top:10px}
+  .screen .top{position:absolute;left:24px;top:10px}
   .screen .top span{display:block}
-  .screen .title{position:absolute;left:12px;top:58px;margin:0}
-  .screen .list{position:absolute;left:6px;right:8px;top:${SCREEN.list}px;bottom:6px}
+  .screen .title{position:absolute;left:24px;top:58px;margin:0}
+  .screen .list{position:absolute;left:18px;right:8px;top:${SCREEN.list}px;bottom:14px}
   .screen .row{height:${SCREEN.row}px;font-size:16px}
   .screen .row .val{font-size:16px}
   .screen .row ha-icon{--mdc-icon-size:22px}
@@ -995,7 +995,7 @@ class GungorsFloorCard extends HTMLElement {
       <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon points="${pts(1)}"/>${lines}</svg>${btns}${opts}
       <style>${g.rows}</style>
       <div class="screen" style="${rectCss(g.screen)};-webkit-clip-path:polygon(${g.screen.clip});clip-path:polygon(${g.screen.clip})">
-        <svg class="sedge" viewBox="0 0 ${g.screen.w} ${g.screen.h}"><polygon points="${g.screen.edge}"/></svg><div class="top"><span class="clock"></span><span class="date"></span></div>
+        <svg class="sedge" viewBox="0 0 ${g.screen.w} ${g.screen.h}"><polyline points="${g.screen.edge}"/></svg><div class="top"><span class="clock"></span><span class="date"></span></div>
         <div class="title"></div><div class="list"></div></div>`;
     d.querySelectorAll(".opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
     d.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
@@ -1068,7 +1068,7 @@ class GungorsFloorCard extends HTMLElement {
     };
     // the screen: all the room left, under the floor cell, beside the cut cell, its top right SCREEN.band inside the
     // slanted edge (under the buttons); its list rows end at that slant (row k: right margin rm[k])
-    const p = SCREEN.pad, sb = SCREEN.band, sx = p, sy = DOCK.cellH + p, sw = mx - p - sx, sh = R - p - sy;
+    const p = SCREEN.pad, sb = SCREEN.band, sx = 0, sy = DOCK.cellH + p, sw = mx - p - sx, sh = R - sy;   // open to the picture's edges
     const slantX = (y) => DOCK.top + n[0] * sb + u[0] * (y - n[1] * sb) / u[1];
     const ya = sy, xa = Math.min(sx + sw, slantX(ya)), yb = Math.min(sy + sh, n[1] * sb + u[1] * (sx + sw - DOCK.top - n[0] * sb) / u[0]);
     const sp = [[0, 0], [xa - sx, 0], [sw, Math.max(0, yb - sy)], [sw, sh], [0, sh]];
@@ -1078,7 +1078,7 @@ class GungorsFloorCard extends HTMLElement {
       if (rm) rows += `.list .row:nth-child(${k + 1}){margin-right:${rm}px}`;
     }
     const screen = { x: sx, y: sy, w: sw, h: sh, clip: sp.map(([x, y]) => `${x.toFixed(1)}px ${y.toFixed(1)}px`).join(","),
-      edge: sp.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ") };
+      edge: sp.slice(0, 4).map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ") };   // no left / bottom line
     return { W, at, cell, screen, rows, poly: [[0, 0], [DOCK.top, 0], [W, dy], [W, R], [0, R]] };
   }
 
