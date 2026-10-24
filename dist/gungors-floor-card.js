@@ -296,7 +296,11 @@ const CSS = `${SIDE_CSS}
   .cell ha-icon{--mdc-icon-size:38px;margin-bottom:4px;filter:drop-shadow(0 1px 1px rgba(0,0,0,.6))}
   .cell:hover,.cell.open{background:rgba(160,215,255,.16)}
   .cell.single{opacity:.5;cursor:default}
-  .cell.kf{background:rgba(160,215,255,.22);box-shadow:inset 0 0 0 3px #fff,0 0 18px #fff}
+  .cell.floor{padding-right:22px}
+  .cell.cut{padding-top:44px}
+  .cell.kf{background:rgba(190,230,255,.34)}
+  .cell.kf ha-icon{filter:drop-shadow(0 0 6px #fff)}
+  .cell.opt.kf ha-icon{filter:none}
   .cell.opt{z-index:2;border:2px solid #a8dcff;border-radius:8px;background:linear-gradient(#1d6fd6,#0b3a86);
             box-shadow:0 4px 10px rgba(0,0,0,.55)}
   .cell.opt ha-icon{--mdc-icon-size:30px;margin-bottom:2px}
@@ -963,8 +967,9 @@ class GungorsFloorCard extends HTMLElement {
         : m.id === "vacuum" ? "vacuum" + (single ? ": none on this floor" : " (map)") : m.title;
       if (isFloor || isCut) {                                     // a cell in its corner, its choice in words
         const r = g.cell[m.id], lb = isFloor ? floorLabel(this._floor) : CUT_LABEL[this._cut];
-        return `<button class="cell${single ? " single" : ""}${this._fly === m.id ? " open" : ""}" data-mode="${m.id}" title="${title}"
-                  style="${rectCss(r)}"><ha-icon icon="${icon}"></ha-icon><span>${lb}</span></button>`;
+        const poly = r.pts.map(([x, y]) => `${x.toFixed(1)}px ${y.toFixed(1)}px`).join(",");
+        return `<button class="cell ${m.id}${single ? " single" : ""}${this._fly === m.id ? " open" : ""}" data-mode="${m.id}" title="${title}"
+                  style="${rectCss(r)};-webkit-clip-path:polygon(${poly});clip-path:polygon(${poly})"><ha-icon icon="${icon}"></ha-icon><span>${lb}</span></button>`;
       }
       return `<button class="btn${single ? " single" : ""}" data-mode="${m.id}" title="${title}"
                 style="left:${c[0] - 35}px;top:${c[1] - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
@@ -972,13 +977,14 @@ class GungorsFloorCard extends HTMLElement {
     const opts = this._flyOpts().map((o, i) => `<button class="cell opt${o.on ? " active" : ""}" data-opt="${i}" title="${o.title}"
                 style="${rectCss(o.r)}"><ha-icon icon="${o.icon}"></ha-icon><span>${o.label}</span></button>`).join("");
     const fc = g.cell.floor, cc = g.cell.cut;
-    const lines = `<path class="div" d="M${fc.w},0V${fc.h}H0M${cc.x + cc.w},${cc.y}H${cc.x}V${R}"/>`;
+    const P = (r, i) => `${(r.x + r.pts[i][0]).toFixed(1)},${(r.y + r.pts[i][1]).toFixed(1)}`;
+    const lines = `<path class="div" d="M${P(fc, 1)}L${P(fc, 2)}L${P(fc, 3)}M${P(cc, 0)}L${P(cc, 3)}L${P(cc, 2)}"/>`;
     const pts = (k) => g.poly.map(([x, y]) => `${(x * k).toFixed(1)},${(R - (R - y) * k).toFixed(1)}`).join(" ");
     d.style.width = g.W + "px"; d.style.height = R + "px";
     d.style.top = ((H - R) / H * 100) + "%";
     const clip = g.poly.map(([x, y]) => `${x}px ${y}px`).join(",");
     d.innerHTML = `<div class="disc" style="-webkit-clip-path:polygon(${clip});clip-path:polygon(${clip})"></div>
-      <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon class="in" points="${pts(0.7)}"/><polygon points="${pts(1)}"/>${lines}</svg>${btns}${opts}
+      <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon points="${pts(1)}"/>${lines}</svg>${btns}${opts}
       <div class="screen"><div class="top"><span class="clock"></span><span class="date"></span></div>
         <div class="title"></div><div class="list"></div></div>`;
     d.querySelectorAll(".opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
@@ -1041,8 +1047,15 @@ class GungorsFloorCard extends HTMLElement {
       const t = L / 2 - 10 + (k - 1.5) * DOCK.gap;                // a group in the middle of the edge, clear of the cells
       at[id] = [DOCK.top + u[0] * t + n[0] * 46, u[1] * t + n[1] * 46];
     });
-    // the corner cells: floor under the top edge, cut beside the right edge, each as long as its edge
-    const cell = { floor: { x: 0, y: 0, w: DOCK.top, h: DOCK.cellH }, cut: { x: W - DOCK.cellW, y: dy, w: DOCK.cellW, h: DOCK.side } };
+    // the corner cells: bands along the top and the right edge (DOCK.cellH / cellW deep), cut off from the slanted
+    // edge by mitres (the lines halving the corners' angles), like the corners of a frame; pts: in the cell's box
+    const off = (b, s) => [DOCK.top + n[0] * b + u[0] * s, n[1] * b + u[1] * s];   // inside the slanted edge by b
+    const mt = off(DOCK.cellH, DOCK.cellH * (1 - n[1]) / u[1]);                     // top mitre's inner end (y = cellH)
+    const mx = W - DOCK.cellW, mb = off(DOCK.cellW, (mx - DOCK.top - n[0] * DOCK.cellW) / u[0]);  // right mitre's (x = mx)
+    const cell = {
+      floor: { x: 0, y: 0, w: DOCK.top, h: DOCK.cellH, pts: [[0, 0], [DOCK.top, 0], [mt[0], DOCK.cellH], [0, DOCK.cellH]] },
+      cut: { x: mx, y: dy, w: DOCK.cellW, h: R - dy, pts: [[DOCK.cellW, 0], [DOCK.cellW, R - dy], [0, R - dy], [0, mb[1] - dy]] },
+    };
     return { W, at, cell, poly: [[0, 0], [DOCK.top, 0], [W, dy], [W, R], [0, R]] };
   }
 
