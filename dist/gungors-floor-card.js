@@ -180,7 +180,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.39.0";
+const CARD_VERSION = "1.39.1";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -583,7 +583,7 @@ class GungorsFloorCard extends HTMLElement {
     new ResizeObserver(() => this._fitDock()).observe(this._wrap);
     requestAnimationFrame(() => this._fit());
     // remote: keys of this document and of the page's (focus may be in the iframe); a touch or click drops the pick
-    const kd = (e) => this._key(e, true), ku = (e) => this._key(e, false), pd = () => this._keyDrop();
+    const kd = (e) => this._key(e, true), ku = (e) => this._key(e, false), pd = (e) => this._keyDrop(e);
     const listen = (w) => { w.addEventListener("keydown", kd); w.addEventListener("keyup", ku); w.addEventListener("pointerdown", pd, true); };
     listen(window);
     this._frame.addEventListener("load", () => { try { listen(this._frame.contentWindow); } catch (e) { /* not the same origin */ } });
@@ -1310,8 +1310,13 @@ class GungorsFloorCard extends HTMLElement {
     this._keyApply();
   }
 
-  _keyDrop() {
-    if (this._fly) { this._fly = null; if (this._page) this._buildDock(); }
+  // e: the pointerdown; one on a floor / cut choice or on the floor / cut cell leaves the choices to its click
+  // (a rebuild here would remove the pressed button before its click)
+  _keyDrop(e) {
+    const path = e && e.composedPath ? e.composedPath() : [];
+    const own = path.some((n) => n.classList && (n.classList.contains("opt")
+      || (n.dataset && (n.dataset.mode === "floor" || n.dataset.mode === "cut"))));
+    if (this._fly && !own) { this._fly = null; if (this._page) this._buildDock(); }
     if (!this._kz) return;
     this._kz = null;
     this._kCtl = false;
