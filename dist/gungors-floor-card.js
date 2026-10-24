@@ -175,7 +175,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.38.0";
+const CARD_VERSION = "1.39.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -243,7 +243,7 @@ const DOCK = { top: 120, side: 120, slope: Math.SQRT1_2, gap: 76, cellH: 95, cel
 const SCREEN = { pad: 14, list: 72, row: 32 };   // gap to the cells, list top, row height
 // the clock, date and place shown (room / camera): a cell in the picture's top left corner (page px), open to the
 // picture's edges, its bottom-right corner cut along the render's world X axis (from the right edge at cy, slope 0.707)
-const HUD = { w: 230, h: 130, cy: 70 };
+const HUD = { w: 176, h: 100, cy: 56 };
 const HUD_PTS = [[0, 0], [HUD.w, 0], [HUD.w, HUD.cy], [HUD.w - (HUD.h - HUD.cy) / Math.SQRT1_2, HUD.h], [0, HUD.h]];
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
 // corner is cut along the render's world Y axis (from the left edge at SIDE.y down to the bottom at SIDE.x), parallel
@@ -331,13 +331,14 @@ const CSS = `${SIDE_CSS}
   .screen .row{height:${SCREEN.row}px;font-size:17px}
   .screen .row .val{font-size:17px}
   .screen .row ha-icon{--mdc-icon-size:22px}
-  .hud{position:absolute;box-sizing:border-box;padding:14px 0 0 24px;pointer-events:none;background:linear-gradient(#051a40,#0a2c63)}
+  .hud{position:absolute;box-sizing:border-box;padding:10px 0 0 18px;pointer-events:none;text-shadow:0 1px 3px rgba(0,0,0,.6);
+       background:radial-gradient(ellipse farthest-corner at 0% 0%,#0d3b85 0 30%,#1d6fd6 62%,#3b95f0 86%,#0b3a86 100%)}
   .hud .sedge{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible}
-  .hud .sedge polyline{fill:none;stroke:#5fb4ff;stroke-width:4;stroke-linejoin:round}
+  .hud .sedge polyline{fill:none;stroke:#a8dcff;stroke-width:4;stroke-linejoin:round}
   .hud span{display:block;position:relative}
-  .hud .clock{font-size:44px;line-height:1}
-  .hud .date{font-size:16px;margin-top:4px}
-  .hud .title{font-size:15px;margin:6px 0 0}
+  .hud .clock{font-size:32px;line-height:1}
+  .hud .date{font-size:13px;margin-top:3px;color:#e8f4ff}
+  .hud .title{font-size:13px;margin:4px 0 0}
   .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
   .date{font-size:12px;color:#9fcfff}
   .title{font-size:12px;letter-spacing:1px;color:#ffd66b;margin:4px 0 2px;text-transform:uppercase}
