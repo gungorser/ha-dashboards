@@ -21,13 +21,18 @@
 // The integration checks every save: an unreadable entry or one that conflicts with an
 // overlapping entry on an entity is refused, and its message is shown in the editor.
 //
-// View: the programs active now (each with stop: the running occurrence ends now, and pause /
-// resume: gungors.pause_program / resume_program, the calendar's `paused` attribute),
-// and a timeline of the week or of one day (Hafta / Gün), one row per room with a program in
+// View: every program (gungors websocket `gungors/programs`): pinned ones first
+// (gungors.pin_program, shared by everyone), then running, timeless and by the next start, ended
+// ones folded under "Geçmiş". A running one has pause / resume (gungors.pause_program /
+// resume_program) and stop (a timed one: the running occurrence ends now; a timeless one:
+// gungors.stop_program). A timeless program (no time of its own, e.g. "Bebek uyku", kept by
+// gungors: save_timeless_program / delete_timeless_program) starts with play and a duration
+// (gungors.start_program, 24 h by default); while it runs it pauses the programs it conflicts
+// with, and they come back when it ends. Below, a timeline of the week or of one day (Hafta / Gün), one row per room with a program in
 // that range (an entity target without an area gets its own row). Each occurrence is one bar
 // from its start to its end, also across midnight; overlapping ones stack. Tap a bar to edit
 // it, a day in the week header to open that day; "Yeni" adds an entry.
-const VERSION = "1.9.0";
+const VERSION = "1.10.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -267,7 +272,7 @@ function parseProgram(raw) {
   let d;
   try { d = JSON.parse(raw); } catch (e) { try { d = yamlParse(raw); } catch (e2) { return null; } }
   if (!d || typeof d !== "object" || Array.isArray(d)) return null;
-  if (Object.keys(d).some((k) => !["target", "start", "end", "rules"].includes(k) && !DOMAINS.includes(k))) return null;
+  if (Object.keys(d).some((k) => !["target", "start", "end", "timeless", "rules"].includes(k) && !DOMAINS.includes(k))) return null;
   const sun = {};
   for (const k of ["start", "end"]) {
     if (d[k] === undefined || d[k] === null) continue;
@@ -290,7 +295,8 @@ function parseProgram(raw) {
     if (!d[dom] || typeof d[dom] !== "object" || Array.isArray(d[dom])) return null;
     for (const [k, v] of Object.entries(d[dom])) if (!add(attrOf(dom, k), v)) return null;
   }
-  return Object.keys(rules).length ? { target, rules, ...sun } : null;
+  const timeless = typeof d.timeless === "string" ? d.timeless : null;
+  return Object.keys(rules).length ? { target, rules, ...sun, ...(timeless ? { timeless } : {}) } : null;
 }
 // The description text of a program: YAML, rules grouped by domain (as the integration writes it).
 function yamlScalarText(v) {
@@ -497,6 +503,12 @@ textarea{min-height:140px;font-family:var(--code-font-family,monospace);font-siz
 .btn:disabled{opacity:.5;cursor:default}
 .ibtn{width:40px;height:40px;flex:none;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;border:1px solid var(--divider-color);background:none;color:var(--primary-text-color);cursor:pointer;padding:0}
 .ibtn:hover{background:var(--secondary-background-color)}
+.ibtn[data-a="pin"]{border:0;width:32px;height:32px;color:var(--secondary-text-color)}
+.ibtn[data-a="pin"] ha-icon{--mdc-icon-size:18px}
+.ibtn.pinned{color:var(--primary-color)}
+.head .right{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.act.on .sum{font-weight:600}
+.durs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .act.paused .sum{color:var(--secondary-text-color)}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--primary-color);outline-offset:1px}
 `;
@@ -506,7 +518,7 @@ class GungorsProgramCard extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._events = [];
-    this._active = [];
+    this._programs = [];
     this._week = null;
     this._day = null;
     try { this._view = localStorage.getItem("gungors-program-view") === "day" ? "day" : "week"; } catch (_) { this._view = "week"; }
@@ -620,17 +632,32 @@ class GungorsProgramCard extends HTMLElement {
       const r = this._range;
       const ws = new Date(zonedIso(r.start, "00:00", tz));
       const we = new Date(zonedIso(addDays(r.start, r.days), "00:00", tz));
-      const now = new Date();
-      const [events, active] = await Promise.all([this._fetch(ws, we), this._fetch(now, new Date(now.getTime() + 1000))]);
+      const [events, list] = await Promise.all([this._fetch(ws, we), this._hass.callWS({ type: "gungors/programs" })]);
       this._events = events;
-      this._active = active.filter((ev) => ev._st <= now && ev._en > now);
+      this._programs = (list.programs || []).map((p) => this._programEvent(p));
     } catch (err) {
       this._error = `Takvim okunamadı: ${err?.message || err?.body?.message || err}`;
       this._events = [];
-      this._active = [];
+      this._programs = [];
     }
     this._loading = false;
     this._render();
+  }
+
+  // A `gungors/programs` item, shaped like a calendar event (the editor and the rows use both).
+  _programEvent(p) {
+    const tz = this._tz;
+    const side = (iso) => {
+      if (!iso) return null;
+      return p.all_day ? { date: partsInTz(new Date(iso), tz).date } : { dateTime: iso };
+    };
+    let start = side(p.start), end = side(p.end);
+    if (p.all_day && start && end && end.date <= start.date) end = { date: addDays(start.date, 1) };
+    return {
+      ...p, start, end,
+      _st: p.start ? new Date(p.start) : null, _en: p.end ? new Date(p.end) : null,
+      _p: parseProgram(p.description), _item: true,
+    };
   }
 
   // ---------- form model ----------
@@ -643,7 +670,19 @@ class GungorsProgramCard extends HTMLElement {
       sDate: p.date, sTime: `${pad(h)}:00`, eDate: eh === 0 ? addDays(p.date, 1) : p.date, eTime: `${pad(eh)}:00`,
       sMode: "time", sOff: "0", eMode: "time", eOff: "0",
       mode: "none", days: [], rawRrule: "",
-      targets: [], lines: [], rawMode: false, rawBad: false, rawDesc: "",
+      targets: [], lines: [], rawMode: false, rawBad: false, rawDesc: "", timeless: false,
+    };
+  }
+
+  // A timeless program's form (no times; kept by gungors, not in the calendar).
+  _formFromTimeless(p) {
+    const f = this._newForm();
+    const prog = parseProgram(p.description);
+    return {
+      ...f, timeless: true, orig: { uid: p.uid, timeless: true }, summary: p.summary || "",
+      targets: prog ? prog.target.map((t) => (String(t).includes(".") ? t : this._areaIdOf(t) || t)) : [],
+      lines: prog ? linesOf(prog.rules) : [],
+      rawMode: !prog, rawBad: !prog, rawDesc: p.description || "",
     };
   }
 
@@ -731,10 +770,11 @@ class GungorsProgramCard extends HTMLElement {
   _programText(f) {
     if (f.rawMode) return f.rawDesc;
     const target = f.targets.map((t) => (String(t).includes(".") ? t : this._areaName(t)));
-    return dumpProgram(target, this._rulesOf(f.lines), this._sunOf(f));
+    return dumpProgram(target, this._rulesOf(f.lines), f.timeless ? {} : this._sunOf(f));
   }
 
   _validate(f) {
+    if (f.timeless) return this._validateProgram(f, true);
     if (f.mode === "weekly" && !f.days.length) return "Haftanın en az bir gününü seç.";
     if (f.mode === "custom" && !f.rawRrule.trim()) return "Tekrar kuralını (RRULE) gir.";
     if (!f.sDate || !f.eDate || (!f.allDay && ((f.sMode === "time" && !f.sTime) || (f.eMode === "time" && !f.eTime))))
@@ -746,7 +786,16 @@ class GungorsProgramCard extends HTMLElement {
       const { start, end } = this._span(f, f.sDate, f.eDate);
       if (new Date(end) <= new Date(start)) return "Bitiş, başlangıçtan sonra olmalı.";
     }
-    if (f.rawMode) return parseProgram(f.rawDesc) ? null : "Açıklama geçerli bir program değil (target ve rules gerekli; start/end: sunrise ya da sunset, ör. sunset-30m).";
+    return this._validateProgram(f, false);
+  }
+
+  _validateProgram(f, timeless) {
+    if (timeless && !f.summary.trim()) return "Zamansız programa bir ad ver.";
+    if (f.rawMode) {
+      const p = parseProgram(f.rawDesc);
+      if (!p) return "Açıklama geçerli bir program değil (target ve rules gerekli; start/end: sunrise ya da sunset, ör. sunset-30m).";
+      return timeless && (p.start || p.end || p.timeless) ? "Zamansız programda start / end olmaz." : null;
+    }
     if (!f.targets.length) return "En az bir oda ya da cihaz seç.";
     if (!f.lines.length) return "En az bir kural ekle.";
     const seen = {};
@@ -791,9 +840,18 @@ class GungorsProgramCard extends HTMLElement {
     const f = this._form;
     const v = this._validate(f);
     if (v) { this._formError = v; this._render(); return; }
-    const event = this._eventPayload(f);
     this._busy = true; this._formError = null; this._render();
     try {
+      if (f.timeless) {
+        const data = { summary: f.summary.trim(), description: this._programText(f) };
+        if (f.orig) data.uid = f.orig.uid;
+        await this._hass.callService("gungors", "save_timeless_program", data, { entity_id: this._config.entity });
+        this._busy = false;
+        this._form = null;
+        await this._load();
+        return;
+      }
+      const event = this._eventPayload(f);
       if (f.orig) {
         // a whole series (or a single entry) is edited in place, keeping its uid
         const msg = { type: "calendar/event/update", entity_id: this._config.entity, uid: f.orig.uid, event };
@@ -815,11 +873,12 @@ class GungorsProgramCard extends HTMLElement {
   async _delete() {
     const f = this._form;
     if (!f?.orig?.uid) return;
-    const what = f.mode === "none" ? "Bu program" : "Bu tekrarlı programın tüm serisi";
+    const what = f.timeless ? "Bu zamansız program" : f.mode === "none" ? "Bu program" : "Bu tekrarlı programın tüm serisi";
     if (!confirm(`${what} silinsin mi?`)) return;
     this._busy = true; this._render();
     try {
-      await this._hass.callWS({ type: "calendar/event/delete", entity_id: this._config.entity, uid: f.orig.uid });
+      if (f.timeless) await this._hass.callService("gungors", "delete_timeless_program", { uid: f.orig.uid }, { entity_id: this._config.entity });
+      else await this._hass.callWS({ type: "calendar/event/delete", entity_id: this._config.entity, uid: f.orig.uid });
       this._busy = false;
       this._form = null;
       await this._load();
@@ -862,11 +921,30 @@ class GungorsProgramCard extends HTMLElement {
 
   async _pause(ev, resume) {
     try {
-      await this._hass.callService("gungors", resume ? "resume_program" : "pause_program", { uid: ev.uid }, { entity_id: this._config.entity });
+      await this._hass.callService("gungors", resume ? "resume_program" : "pause_program", { uid: ev.timeless ? ev.run : ev.uid }, { entity_id: this._config.entity });
+      await this._load();
     } catch (e) {
       this._error = `${resume ? "Devam ettirilemedi" : "Duraklatılamadı"}: ${e?.message || e}`;
       this._render();
     }
+  }
+
+  // gungors services on the calendar (pin, start, stop), then the list again
+  async _call(service, data, failed) {
+    try {
+      await this._hass.callService("gungors", service, data, { entity_id: this._config.entity });
+      await this._load();
+    } catch (e) {
+      this._error = `${failed}: ${e?.message || e}`;
+      this._render();
+    }
+  }
+
+  _startTimeless(p, minutes) {
+    this._startFor = null;
+    const data = { uid: p.uid };
+    if (minutes) data.duration = { hours: Math.floor(minutes / 60), minutes: minutes % 60 };
+    this._call("start_program", data, "Başlatılamadı");
   }
 
   // ---------- events ----------
@@ -877,8 +955,34 @@ class GungorsProgramCard extends HTMLElement {
     const f = this._form;
     if (a === "tab") { this._tab = el.dataset.t; this._render(); return; }
     if (a === "new") { this._openForm(this._newForm()); }
-    else if (a === "edit") { this._openForm(this._formFromEvent(this._find(el.dataset.k))); }
-    else if (a === "end") { this._endNow(this._find(el.dataset.k)); }
+    else if (a === "edit") {
+      const ev = this._find(el.dataset.k);
+      if (!ev) return;
+      const tl = ev.timeless ? ev : ev._p?.timeless ? this._programs.find((p) => p.timeless && p.uid === ev._p.timeless) : null;
+      if (tl) this._openForm(this._formFromTimeless(tl));
+      else if (ev._p?.timeless) return; // a run whose program was deleted
+      else this._openForm(this._formFromEvent(ev));
+    }
+    else if (a === "end") {
+      const ev = this._find(el.dataset.k);
+      if (ev?.timeless) this._call("stop_program", { uid: ev.uid }, "Durdurulamadı");
+      else if (ev) this._endNow(ev);
+    }
+    else if (a === "pin") {
+      const ev = this._find(el.dataset.k);
+      if (ev) this._call("pin_program", { uid: ev.uid, pinned: !ev.pinned }, "Sabitlenemedi");
+    }
+    else if (a === "play") {
+      const k = el.dataset.k;
+      this._startFor = this._startFor === k ? null : k;
+      this._render();
+    }
+    else if (a === "go") {
+      const ev = this._find(el.dataset.k);
+      if (ev) this._startTimeless(ev, +el.dataset.m || 0);
+    }
+    else if (a === "newtl") { this._openForm({ ...this._newForm(), timeless: true }); }
+    else if (a === "past") { this._showPast = !this._showPast; this._render(); }
     else if (a === "pause" || a === "resume") { this._pause(this._find(el.dataset.k), a === "resume"); }
     else if (a === "prev" || a === "next" || a === "today") {
       const step = this._view === "day" ? 1 : 7;
@@ -922,7 +1026,7 @@ class GungorsProgramCard extends HTMLElement {
   }
 
   _find(key) {
-    return [...this._active, ...this._events].find((ev) => `${ev.uid}|${ev.recurrence_id || ""}` === key);
+    return [...this._programs, ...this._events].find((ev) => this._key(ev) === key);
   }
 
   _openForm(f) { this._form = f; this._formError = null; this._render(); }
@@ -957,9 +1061,10 @@ class GungorsProgramCard extends HTMLElement {
   }
 
   // ---------- render ----------
-  _key(ev) { return `${ev.uid}|${ev.recurrence_id || ""}`; }
+  _key(ev) { return ev._item ? `p|${ev.uid}` : `${ev.uid}|${ev.recurrence_id || ""}`; }
 
   _timeText(ev) {
+    if (!ev.start) return "";
     if (!ev.start.dateTime) return "Tüm gün";
     const tz = this._tz;
     const s = partsInTz(ev._st, tz), e = partsInTz(ev._en, tz);
@@ -982,24 +1087,67 @@ class GungorsProgramCard extends HTMLElement {
     return sun + Object.entries(ev._p.rules).map(([k, v]) => ruleChip(k, v)).join("");
   }
 
-  _activeHtml() {
-    if (!this._active.length) return `<div class="empty">Şu an aktif program yok.</div>`;
-    return this._active.map((ev) => {
-      const where = ev._p ? [...new Set(this._rowsOf(ev._p.target).map((k) => this._rowName(k)))].join(", ") : "";
-      const paused = this._paused.includes(ev.uid);
-      const k = esc(this._key(ev));
-      return `<div class="act ${paused ? "paused" : ""}">
+  // A short date and time in house time: "14:30", "Pzt 14:30" (another day this week), "24.10 14:30".
+  _when(d) {
+    const tz = this._tz;
+    const p = partsInTz(d, tz), today = partsInTz(new Date(), tz).date;
+    if (p.date === today) return p.time;
+    const days = Math.round((Date.parse(p.date) - Date.parse(today)) / 864e5);
+    if (days > 0 && days < 7) return `${WD[weekdayIdx(p.date)][1]} ${p.time}`;
+    return `${fmtDay(p.date)} ${p.time}`;
+  }
+
+  _stateText(p) {
+    const name = (uid) => this._programs.find((x) => x.uid === uid)?.summary || "başka program";
+    switch (p.state) {
+      case "running": return p.timeless || p.end?.dateTime ? `Çalışıyor · bitiş ${this._when(p._en)}` : "Çalışıyor";
+      case "paused": return p.paused_by ? `${name(p.paused_by)} duraklattı, bitince devam eder` : "";
+      case "scheduled": return p.start?.dateTime ? `Sıradaki: ${this._when(p._st)}` : `Sıradaki: ${fmtDay(p.start.date)}`;
+      case "idle": return "Zamansız";
+      case "done": return p.start ? `Bitti · ${fmtDate(partsInTz(p._st, this._tz).date)}` : "Bitti";
+      default: return "Okunamayan açıklama";
+    }
+  }
+
+  _rowHtml(p) {
+    const where = p._p ? [...new Set(this._rowsOf(p._p.target).map((k) => this._rowName(k)))].join(", ") : "";
+    const k = esc(this._key(p));
+    const on = p.state === "running" || p.state === "paused";
+    const ib = (a, icon, label, extra = "") => `<button class="ibtn ${extra}" data-a="${a}" data-k="${k}" title="${label}" aria-label="${label}"><ha-icon icon="${icon}"></ha-icon></button>`;
+    let buttons = ib("pin", p.pinned ? "mdi:pin" : "mdi:pin-outline", p.pinned ? "Sabitlemeyi kaldır" : "Üste sabitle", p.pinned ? "pinned" : "");
+    if (on) {
+      buttons += p.state === "paused" ? ib("resume", "mdi:play", "Devam ettir") : ib("pause", "mdi:pause", "Duraklat");
+      buttons += ib("end", "mdi:stop", p.timeless ? "Durdur" : "Şimdi bitir");
+    } else if (p.timeless) buttons += ib("play", "mdi:play", "Başlat");
+    const chips = `${p.timeless ? `<span class="chip"><ha-icon icon="mdi:gesture-tap"></ha-icon>Zamansız</span>` : ""}${p._p ? this._ruleChips(p) : `<span class="chip warn">Okunamayan açıklama</span>`}`;
+    const durations = this._startFor === this._key(p)
+      ? `<div class="durs" role="group" aria-label="Süre">${[[30, "30 dk"], [60, "1 sa"], [120, "2 sa"], [240, "4 sa"], [480, "8 sa"], [720, "12 sa"], [0, "24 sa"]]
+        .map(([m, l]) => `<button class="btn small ${m ? "" : "primary"}" data-a="go" data-k="${k}" data-m="${m}">${l}</button>`).join("")}</div>`
+      : "";
+    return `<div class="act ${p.state === "paused" ? "paused" : ""} ${on ? "on" : ""}">
         <div class="t" data-a="edit" data-k="${k}">
-          <div class="sum">${esc(ev.summary || "(başlıksız)")}${paused ? ` <span class="chip">Duraklatıldı</span>` : ""}</div>
-          <div class="sub">${esc([where, `${this._timeText(ev)} bitiş ${partsInTz(ev._en, this._tz).time}`].filter(Boolean).join(" · "))}</div>
-          <div class="chips">${this._ruleChips(ev)}</div>
+          <div class="sum">${esc(p.summary || "(başlıksız)")}${p.state === "paused" ? ` <span class="chip">Duraklatıldı</span>` : ""}</div>
+          <div class="sub">${esc([where, this._stateText(p)].filter(Boolean).join(" · "))}</div>
+          <div class="chips">${chips}</div>
+          ${durations}
         </div>
-        ${paused
-          ? `<button class="ibtn" data-a="resume" data-k="${k}" title="Devam ettir" aria-label="Devam ettir"><ha-icon icon="mdi:play"></ha-icon></button>`
-          : `<button class="ibtn" data-a="pause" data-k="${k}" title="Duraklat" aria-label="Duraklat"><ha-icon icon="mdi:pause"></ha-icon></button>`}
-        <button class="ibtn" data-a="end" data-k="${k}" title="Şimdi bitir" aria-label="Şimdi bitir"><ha-icon icon="mdi:stop"></ha-icon></button>
+        ${buttons}
       </div>`;
-    }).join("");
+  }
+
+  // Pinned first, then running, timeless, by the next start; ended ones folded under "Geçmiş".
+  _programsHtml() {
+    if (!this._programs.length) return `<div class="empty">Henüz program yok.</div>`;
+    const rank = { running: 0, paused: 0, idle: 1, scheduled: 2, invalid: 3, done: 4 };
+    const sorted = [...this._programs].sort((a, b) =>
+      (b.pinned - a.pinned) || (rank[a.state] - rank[b.state]) ||
+      ((a.state === "scheduled" && b.state === "scheduled") ? a._st - b._st : 0) ||
+      (a.state === "done" && b.state === "done" ? (b._st || 0) - (a._st || 0) : 0) ||
+      String(a.summary).localeCompare(String(b.summary), "tr"));
+    const current = sorted.filter((p) => p.pinned || p.state !== "done");
+    const past = sorted.filter((p) => !p.pinned && p.state === "done");
+    return `${current.map((p) => this._rowHtml(p)).join("")}
+      ${past.length ? `<button class="link" data-a="past" aria-expanded="${!!this._showPast}" style="margin-top:8px">${this._showPast ? "▾" : "▸"} Geçmiş (${past.length})</button>${this._showPast ? past.map((p) => this._rowHtml(p)).join("") : ""}` : ""}`;
   }
 
   // Each occurrence is one bar from its start to its end (clipped to the shown range), so a
@@ -1068,10 +1216,10 @@ class GungorsProgramCard extends HTMLElement {
       ? `${WD[weekdayIdx(this._day)][1]} ${fmtDate(this._day)}`
       : `Hafta ${fmtDate(this._week)} – ${fmtDate(addDays(this._week, 6))}`;
     if (this._tab === "defaults") return `${this._tabsHtml()}${this._defaultsHtml()}`;
-    return `${this._tabsHtml()}<div class="head"><div class="title">${esc(c.title)}</div><button class="btn primary" data-a="new">Yeni</button></div>
+    return `${this._tabsHtml()}<div class="head"><div class="title">${esc(c.title)}</div><div class="right"><button class="btn" data-a="newtl" title="Saati olmayan, gerektiğinde başlatılan program">Yeni zamansız</button><button class="btn primary" data-a="new">Yeni</button></div></div>
       ${this._error ? `<div class="err">${esc(this._error)} <button class="btn small" data-a="reload">Tekrar dene</button></div>` : ""}
-      <div class="sec">Şu an aktif</div>
-      ${this._loading ? `<div class="empty">Yükleniyor…</div>` : this._activeHtml()}
+      <div class="sec">Programlar</div>
+      ${this._loading && !this._programs.length ? `<div class="empty">Yükleniyor…</div>` : this._programsHtml()}
       <div class="head wrap" style="margin-top:12px">
         <div class="sec" style="margin:0">${esc(label)}</div>
         <div class="nav">
@@ -1193,6 +1341,19 @@ class GungorsProgramCard extends HTMLElement {
           <textarea data-f="rawDesc" aria-label="Program (YAML)">${esc(f.rawDesc)}</textarea>
           <button class="btn small" data-a="toform" style="margin-top:6px">Forma geç</button></div>`
       : `${this._targetsHtml(f)}${this._rulesHtml(f)}<button class="link" data-a="toraw">YAML olarak düzenle</button>`;
+    if (f.timeless) {
+      return `<div class="head"><div class="title">${f.orig ? "Zamansız programı düzenle" : "Yeni zamansız program"}</div></div>
+      <div class="form">
+        <div class="field"><label>Ad</label><input type="text" data-f="summary" value="${esc(f.summary)}" placeholder="ör. Bebek uyku"></div>
+        <div class="note">Saati yok: listede ▶ ile başlatılır (süre seçilmezse 24 saat), ■ ile durur. Çalışırken çakıştığı programları duraklatır, bitince onlar geri gelir.${f.orig ? " Çalışırken yapılan değişiklik hemen uygulanır." : ""}</div>
+        ${program}
+        ${this._formError ? `<div class="err">${esc(this._formError)}</div>` : ""}
+        <div class="actions">
+          ${f.orig ? `<button class="btn danger" data-a="delete" ${b}>Sil</button>` : ""}
+          <div class="right"><button class="btn" data-a="cancel" ${b}>Vazgeç</button><button class="btn primary" data-a="save" ${b}>${this._busy ? "Kaydediliyor…" : "Kaydet"}</button></div>
+        </div>
+      </div>`;
+    }
     const series = f.orig && f.orig.rrule ? `<div class="note">Tekrarlı bir programı düzenlemek tüm seriyi değiştirir.</div>` : "";
     return `<div class="head"><div class="title">${f.orig ? "Programı düzenle" : "Yeni program"}</div></div>
       <div class="form">
