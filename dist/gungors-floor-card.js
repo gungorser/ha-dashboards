@@ -238,7 +238,9 @@ const STREAM_WAIT_MS = 45000;
 // buttons) and a vertical right edge (DOCK.side px long, the wall cut button). Its height is dock_radius.
 const DOCK = { top: 120, side: 120, slope: Math.SQRT1_2, gap: 76, cellH: 95, cellW: 100 };
 // the dock's screen: left / bottom offset and size in page px
-const SCREEN = { pad: 14, list: 92, row: 29 };   // gap to the cells, list top, row height
+const SCREEN = { pad: 14, list: 72, row: 32 };   // gap to the cells, list top, row height
+// the clock, date and place shown (floor · room / camera): the picture's top left corner, page px
+const HUD = { x: 24, y: 18 };
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
 // corner is cut along the render's world Y axis (from the left edge at SIDE.y down to the bottom at SIDE.x), parallel
 // to the house walls: model.json camera y = [-24.27, -17.16] px per metre, slope 17.16 / 24.27 = 0.707 (116 / 164). Plain CSS (no inset, no flex gap): TV browsers are old.
@@ -321,15 +323,15 @@ const CSS = `${SIDE_CSS}
   .screen.act{cursor:pointer}
   .screen.act:hover .sedge polygon{stroke:var(--hc)}
   .screen.kf .sedge polygon{stroke:#fff;stroke-width:6}
-  .screen .top{position:absolute;left:24px;top:16px}
-  .screen .top span{display:block}
-  .screen .title{position:absolute;left:24px;top:62px;margin:0}
   .screen .list{position:absolute;left:18px;right:8px;top:${SCREEN.list}px;bottom:14px}
-  .screen .row{height:${SCREEN.row}px;font-size:16px}
-  .screen .row .val{font-size:16px}
+  .screen .row{height:${SCREEN.row}px;font-size:17px}
+  .screen .row .val{font-size:17px}
   .screen .row ha-icon{--mdc-icon-size:22px}
-  .screen .clock{font-size:26px}
-  .screen .title{top:66px;font-size:13px}
+  .hud{position:absolute;pointer-events:none;text-shadow:0 1px 4px rgba(0,0,0,.8)}
+  .hud span{display:block}
+  .hud .clock{font-size:44px;line-height:1}
+  .hud .date{font-size:16px;margin-top:4px}
+  .hud .title{font-size:15px;margin:6px 0 0}
   .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
   .date{font-size:12px;color:#9fcfff}
   .title{font-size:12px;letter-spacing:1px;color:#ffd66b;margin:4px 0 2px;text-transform:uppercase}
@@ -995,8 +997,9 @@ class GungorsFloorCard extends HTMLElement {
       <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon points="${pts(1)}"/>${lines}</svg>${btns}${opts}
       <style>${g.rows}</style>
       <div class="screen" style="${rectCss(g.screen)};-webkit-clip-path:polygon(${g.screen.clip});clip-path:polygon(${g.screen.clip})">
-        <svg class="sedge" viewBox="0 0 ${g.screen.w} ${g.screen.h}"><polyline points="${g.screen.edge}"/></svg><div class="top"><span class="clock"></span><span class="date"></span></div>
-        <div class="title"></div><div class="list"></div></div>`;
+        <svg class="sedge" viewBox="0 0 ${g.screen.w} ${g.screen.h}"><polyline points="${g.screen.edge}"/></svg><div class="list"></div></div>
+      <div class="hud" style="top:${HUD.y - (H - R)}px;left:${HUD.x}px"><span class="clock"></span><span class="date"></span>
+        <span class="title"></span></div>`;
     d.querySelectorAll(".opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
     d.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
       const fm = b.dataset.mode;
