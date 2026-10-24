@@ -22,7 +22,8 @@
  * Dock: bottom left, three straight edges: a horizontal top with the floor cell (opens the floors upwards), a slanted
  * edge along the render's axis with the buttons heating, sun, cameras and vacuum, and a vertical right edge with the
  * wall cut cell (opens the cuts to the right); the cells are cut off by mitres. The rest is a screen with the mode's
- * rows, open to the picture's edges. The clock, date and place (room / camera) sit in a cell top left. Heating: the climates of the floor shown (page type climate, in the order of
+ * rows, open to the picture's edges. The clock, date and place (room / camera) sit in a cell top left. Family photos (`family`):
+ * a panel bottom right, three portrait cells (hidden in the sun mode, where the page draws its compass). Heating: the climates of the floor shown (page type climate, in the order of
  * `entities`), one room at a time; each press of the heating button (while the heating mode is on) goes on
  * to the next room (after the last, back to the first; a floor switch starts at the first). The screen shows
  * the room's name, current and target temperature, hvac mode and action, and humidity (the entity's
@@ -99,6 +100,10 @@
  *   base: /local/gungors_floor/       # optional
  *   sun: sun.sun                      # required
  *   dock_radius: 370                  # optional: height (page px) of the control dock in the bottom-left corner
+ *   family:                           # optional: portraits in a panel in the bottom-right corner (3 cells split
+ *     - /local/family/sercan.svg      #   along the render's axes): left, middle, top; each image made for its
+ *     - /local/family/oglum.svg       #   cell's box (FAM / famGeo); hidden in the sun mode (the compass is there)
+ *     - /local/family/melike.svg
  *   cut: front                        # optional: wall cut shown first: none, front (default: the outer walls
  *                                     #   facing the camera cut down) or all (every wall cut down)
  *   lighting:                         # optional: brightness of the house's world light (the page's
@@ -175,7 +180,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.38.0";
+const CARD_VERSION = "1.39.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -243,7 +248,25 @@ const DOCK = { top: 120, side: 120, slope: Math.SQRT1_2, gap: 76, cellH: 95, cel
 const SCREEN = { pad: 14, list: 72, row: 32 };   // gap to the cells, list top, row height
 // the clock, date and place shown (room / camera): a cell in the picture's top left corner (page px), open to the
 // picture's edges, its bottom-right corner cut along the render's world X axis (from the right edge at cy, slope 0.707)
-const HUD = { w: 230, h: 130, cy: 70 };
+const HUD = { w: 176, h: 100, cy: 56 };
+// the family photos: a panel in the picture's bottom-right corner (page px, FAM.h high), open to the picture's right and
+// bottom edges: a vertical left edge (FAM.left long), a slanted edge along the render's world X axis (the house's front
+// edge) and a horizontal top edge (FAM.top long). Two lines split it into three cells as Sercan drew them: from the
+// slant at x = FAM.l steeply down to the bottom (FAM.ls px down per px right) and from the slant at x = FAM.u to the
+// right edge (FAM.us down per px right). Cells: left, middle (the corner, largest), top; each shows one portrait
+// (config family: [left, middle, top]), an image made for the cell's box (famGeo().cells[i].box).
+const FAM = { h: 340, top: 100, left: 120, l: 115, u: 165, ls: 2, us: 0.35 };
+const famGeo = () => {
+  const H = FAM.h, dy = H - FAM.left, W = Math.round(FAM.top + dy / Math.SQRT1_2), sx = W - FAM.top;
+  const sy = (x) => dy * (1 - x / sx);                                   // the slant through (0, dy) and (sx, 0)
+  const l0 = [FAM.l, sy(FAM.l)], l1 = [FAM.l + (H - l0[1]) / FAM.ls, H];
+  const u0 = [FAM.u, sy(FAM.u)], u1 = [W, u0[1] + (W - FAM.u) * FAM.us];
+  const cells = [[[0, dy], l0, l1, [0, H]], [l0, u0, u1, [W, H], l1], [u0, [sx, 0], [W, 0], u1]].map((pts) => {
+    const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]), x = Math.min(...xs), y = Math.min(...ys);
+    return { pts, box: { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y } };
+  });
+  return { W, H, cells, edge: [[0, H], [0, dy], [sx, 0], [W, 0]], div: [[l0, l1], [u0, u1]] };
+};
 const HUD_PTS = [[0, 0], [HUD.w, 0], [HUD.w, HUD.cy], [HUD.w - (HUD.h - HUD.cy) / Math.SQRT1_2, HUD.h], [0, HUD.h]];
 // the remote's side panel, top right: designed on a picture SIDE.ref px wide, scaled with the card. Its bottom-left
 // corner is cut along the render's world Y axis (from the left edge at SIDE.y down to the bottom at SIDE.x), parallel
@@ -331,13 +354,21 @@ const CSS = `${SIDE_CSS}
   .screen .row{height:${SCREEN.row}px;font-size:17px}
   .screen .row .val{font-size:17px}
   .screen .row ha-icon{--mdc-icon-size:22px}
-  .hud{position:absolute;box-sizing:border-box;padding:14px 0 0 24px;pointer-events:none;background:linear-gradient(#051a40,#0a2c63)}
+  .hud{position:absolute;box-sizing:border-box;padding:10px 0 0 16px;pointer-events:none;
+       background:linear-gradient(135deg,#071d45 0%,#0d3b85 55%,#1d6fd6 100%)}
   .hud .sedge{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible}
-  .hud .sedge polyline{fill:none;stroke:#5fb4ff;stroke-width:4;stroke-linejoin:round}
+  .hud .sedge polyline{fill:none;stroke:#a8dcff;stroke-width:4;stroke-linejoin:round}
   .hud span{display:block;position:relative}
-  .hud .clock{font-size:44px;line-height:1}
-  .hud .date{font-size:16px;margin-top:4px}
-  .hud .title{font-size:15px;margin:6px 0 0}
+  .hud .clock{font-size:34px;line-height:1}
+  .hud .date{font-size:13px;margin-top:3px}
+  .hud .title{font-size:13px;margin:4px 0 0}
+  .fam{position:absolute;pointer-events:none}
+  .fam.off{display:none}
+  .fam .fc{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;background:linear-gradient(#0d3b85,#071d45)}
+  .fam img{position:absolute;display:block}
+  .fam svg{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;filter:drop-shadow(0 0 10px rgba(90,180,255,.6))}
+  .fam polyline{fill:none;stroke:#a8dcff;stroke-width:4;stroke-linejoin:round}
+  .fam path{fill:none;stroke:rgba(168,220,255,.8);stroke-width:3}
   .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
   .date{font-size:12px;color:#9fcfff}
   .title{font-size:12px;letter-spacing:1px;color:#ffd66b;margin:4px 0 2px;text-transform:uppercase}
@@ -434,6 +465,9 @@ class GungorsFloorCard extends HTMLElement {
     if (typeof lighting !== "object" || (lighting.default != null && typeof lighting.default !== "number"))
       err("'lighting' must be {default: a number}");
     if (config.cut != null && !CUTS.includes(config.cut)) err("'cut' must be none, front or all");
+    if (config.family != null && (!Array.isArray(config.family) || config.family.length > 3
+        || config.family.some((f) => typeof (f && typeof f === "object" ? f.image : f) !== "string")))
+      err("'family' must be a list of up to 3 images (left, middle, top): a path or {image: path}");
     this._config = { base: "/local/gungors_floor/", dock_radius: 370, cut: "front", ...config };
     if (!this._cut) this._cut = CUTS.includes(savedCut()) ? savedCut() : this._config.cut;
     if (!this._config.base.endsWith("/")) this._config.base += "/";
@@ -1008,7 +1042,7 @@ class GungorsFloorCard extends HTMLElement {
         <svg class="sedge" viewBox="0 0 ${g.screen.w} ${g.screen.h}"><polyline points="${g.screen.edge}"/></svg><div class="list"></div></div>
       <div class="hud" style="top:${R - H}px;left:0;width:${HUD.w}px;height:${HUD.h}px;-webkit-clip-path:polygon(${hudClip});clip-path:polygon(${hudClip})">
         <svg class="sedge" viewBox="0 0 ${HUD.w} ${HUD.h}"><polyline points="${hudEdge}"/></svg>
-        <span class="clock"></span><span class="date"></span><span class="title"></span></div>`;
+        <span class="clock"></span><span class="date"></span><span class="title"></span></div>${this._famHtml(R)}`;
     d.querySelectorAll(".opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
     d.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
       const fm = b.dataset.mode;
@@ -1517,7 +1551,26 @@ class GungorsFloorCard extends HTMLElement {
   }
 
   // the page's qibla compass (bottom right) shows while the sun mode is on
-  _compass() { this._post({ gf: "compass", value: this._mode === "sun" }); }
+  // the family panel bottom right (config family); hidden in the sun mode, where the page draws its compass there
+  _famHtml(R) {
+    const imgs = (this._config.family || []).map((f) => (f && typeof f === "object" ? f.image : f));
+    if (!imgs.length) return "";
+    const g = famGeo(), P = (q) => `${q[0].toFixed(1)},${q[1].toFixed(1)}`;
+    const cells = g.cells.map((c, i) => {
+      if (!imgs[i]) return "";
+      const clip = c.pts.map((q) => `${q[0].toFixed(1)}px ${q[1].toFixed(1)}px`).join(",");
+      return `<div class="fc" style="-webkit-clip-path:polygon(${clip});clip-path:polygon(${clip})"><img src="${imgs[i]}" alt=""
+                style="${rectCss({ x: c.box.x.toFixed(1), y: c.box.y.toFixed(1), w: c.box.w.toFixed(1), h: c.box.h.toFixed(1) })}"></div>`;
+    }).join("");
+    return `<div class="fam${this._mode === "sun" ? " off" : ""}" style="left:${this._page.W - g.W}px;top:${R - g.H}px;width:${g.W}px;height:${g.H}px">${cells}
+      <svg viewBox="0 0 ${g.W} ${g.H}"><polyline points="${g.edge.map(P).join(" ")}"/><path d="${g.div.map(([a, b]) => `M${P(a)}L${P(b)}`).join("")}"/></svg></div>`;
+  }
+
+  _compass() {
+    const f = this._dock && this._dock.querySelector(".fam");
+    if (f) f.classList.toggle("off", this._mode === "sun");
+    this._post({ gf: "compass", value: this._mode === "sun" });
+  }
 
   _fitDock() {
     if (!this._page) return;
