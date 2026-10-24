@@ -7,7 +7,7 @@ Custom Lovelace cards for the Gungor house. Installed through HACS as a custom r
 |---|---|---|
 | `custom:gungors-rooms-card` | `unnecessary` dashboard | Lists active entities of a whitelist by domain/area and turns the selected ones off |
 | `custom:gungors-program-card` | `program` dashboard | The gungors program calendar (`calendar.program`): every program (pinned first; start and stop timeless ones like "Bebek uyku"), a week grid per room, and an editor for an entry's targets and rules |
-| `custom:gungors-floor-card` | `floorplan-3d` dashboard | Live-lit 3D view of a floor (Blender renders + WebGL2), tap/hold like the floorplan dashboard |
+| `custom:gungors-floor-card` | `floorplan-3d` dashboard | Live-lit 3D view of a floor (Blender renders + WebGL2), tap/hold like the floorplan dashboard; a TV remote (arrows, OK, back) works it too |
 | `kiosk-mode.js` (not a card) | TV (Fully Kiosk) | [NemesisRE/kiosk-mode](https://github.com/NemesisRE/kiosk-mode) v15.0.0, MIT, vendored unchanged (HACS cannot download its release assets): `?kiosk` on a dashboard URL hides the header and sidebar; without it nothing changes |
 
 Each card's header comment is its full reference (YAML options, messages, behaviour): read the

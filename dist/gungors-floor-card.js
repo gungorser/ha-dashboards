@@ -65,6 +65,15 @@
  * Qibla: in the sun mode of the dock the card asks the page for its qibla compass ({gf: "compass", value:
  * true}; false in the other modes), drawn by the page bottom right.
  *
+ * Remote (TV remote, keyboard): the arrow keys pick the entities of the floor shown by where they are on the
+ * picture (the boxes of the page's "ready"; only entities with a tap or hold action), the one picked glows as if
+ * hovered ({gf: "highlight", id}). OK / Enter: a short press is its tap, a long one (HOLD_MS) its hold. Left or
+ * down with nothing further that way goes into the dock (at the button of the mode shown): up / down walk its
+ * buttons and its screen, OK presses them (the screen: tap / hold of the room, camera or vacuum shown, which
+ * glows), right goes back to the house. Back / Esc closes a popup, else leaves the dock, else drops the pick.
+ * Channel up / down (page up / down): the next floor. Nothing shows until a key is pressed; a touch or click
+ * drops it. Keys in a text field or a Home Assistant dialog (more-info) are left to it.
+ *
  * Wall cut: the cut button of the dock goes on to the next cut the floor has (none -> front -> all; the
  * page's "ready" lists them) and sends it to the page ({gf: "cut", mode}); the page shows that cut's
  * render of every floor (the plain one where a floor has none). The choice is kept in this browser
@@ -150,7 +159,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.28.0";
+const CARD_VERSION = "1.29.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -228,11 +237,13 @@ const CSS = `
   .btn:hover{transform:scale(1.08)}
   .btn.active{border-color:#ffd66b;box-shadow:0 4px 10px rgba(0,0,0,.55),0 0 20px rgba(255,214,107,.85)}
   .btn.single{opacity:.5;cursor:default}
+  .btn.kf{transform:scale(1.12);border-color:#fff;box-shadow:0 0 0 3px #fff,0 0 26px #fff}
   .screen{position:absolute;left:${SCREEN.x}px;bottom:${SCREEN.y}px;width:${SCREEN.w}px;height:${SCREEN.h}px;box-sizing:border-box;padding:8px 10px;pointer-events:auto;
           border-radius:16px;border:2px solid #5fb4ff;background:linear-gradient(#051a40,#0a2c63);
           box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 10px rgba(80,170,255,.4);display:flex;flex-direction:column}
   .screen.act{cursor:pointer;transition:box-shadow .15s,border-color .15s}
   .screen.act:hover{border-color:var(--hc);box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 6px var(--hc),0 0 22px var(--hc)}
+  .screen.kf{border-color:var(--hc,#fff);box-shadow:inset 0 2px 10px rgba(0,0,0,.7),0 0 0 2px #fff,0 0 22px var(--hc,#fff)}
   .top{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid rgba(95,180,255,.35);padding-bottom:3px}
   .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
   .date{font-size:12px;color:#9fcfff}
@@ -425,6 +436,11 @@ class GungorsFloorCard extends HTMLElement {
     new ResizeObserver(() => this._fit()).observe(this);
     new ResizeObserver(() => this._fitDock()).observe(this._wrap);
     requestAnimationFrame(() => this._fit());
+    // remote: keys of this document and of the page's (focus may be in the iframe); a touch or click drops the pick
+    const kd = (e) => this._key(e, true), ku = (e) => this._key(e, false), pd = () => this._keyDrop();
+    const listen = (w) => { w.addEventListener("keydown", kd); w.addEventListener("keyup", ku); w.addEventListener("pointerdown", pd, true); };
+    listen(window);
+    this._frame.addEventListener("load", () => { try { listen(this._frame.contentWindow); } catch (e) { /* not the same origin */ } });
     this._load();
   }
 
@@ -450,7 +466,11 @@ class GungorsFloorCard extends HTMLElement {
         return;
       }
       this._page = { W: d.W, H: d.H, entities: new Map(d.entities.map((e) => [e.id, e.type])),
-                     cuts: Array.isArray(d.cuts) ? d.cuts : ["none"] };
+                     cuts: Array.isArray(d.cuts) ? d.cuts : ["none"],
+                     centres: new Map(d.entities.filter((e) => Array.isArray(e.box) && e.box[2] > e.box[0]).map((e) => {
+                       const b = e.box, [sx, sy] = e.shift || [0, 0];
+                       return [e.id, [(b[0] + b[2]) / 2 + sx, (b[1] + b[3]) / 2 + sy]];
+                     })) };
       if (d.cut == null && this._cut !== "none") this._post({ gf: "cut", mode: this._cut });   // an older page
       this._sent = {};
       this._fed = false;
@@ -458,6 +478,8 @@ class GungorsFloorCard extends HTMLElement {
       this._wrap.style.aspectRatio = d.W + " / " + d.H;
       this._ratio = d.W / d.H;
       this._fit();
+      this._hlSent = null;                    // a new page or floor glows nothing yet
+      if (this._kz === "house" && !this._navigable().includes(this._kid)) this._kz = null;   // another floor
       this._buildDock();
       this._feed();
     } else if (d.gf === "shown") {
@@ -894,6 +916,138 @@ class GungorsFloorCard extends HTMLElement {
     this._renderList(true);
     this._compass();
     this._fitDock();
+    this._keyApply();
+  }
+
+  // ------------------------------------------------------------------ remote (TV remote, keyboard)
+  _key(ev, down) {
+    if (!this.isConnected || !this._page || !this._hass) return;
+    const k = ev.key, back = k === "Escape" || k === "GoBack" || k === "BrowserBack";
+    if (this._pop) {                                  // a popup is open: back closes it, other keys are its own
+      if (down && back) { ev.preventDefault(); this._closePopup(); }
+      return;
+    }
+    const path = ev.composedPath ? ev.composedPath() : [];
+    if (path.some((n) => n && n.tagName && (/^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName) || /DIALOG/.test(n.tagName) || n.isContentEditable)))
+      return;                                         // a text field or a Home Assistant dialog has the keys
+    const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
+    const ok = k === "Enter" || k === " " || k === "Select";
+    const floorKey = k === "ChannelUp" || k === "ChannelDown" || k === "PageUp" || k === "PageDown";
+    if (!down) {                                      // key up: only OK's, a tap unless it became a hold
+      const p = this._kPress;
+      if (ok && p) { ev.preventDefault(); this._kPress = null; clearTimeout(p.timer); if (!p.held) this._keyAct(p, "tap"); }
+      return;
+    }
+    if (back) {                                       // back: out of the dock, else drop the pick; nothing picked: not ours
+      if (!this._kz) return;
+      ev.preventDefault();
+      this._kz = this._kz === "dock" && this._navigable().includes(this._kid) ? "house" : null;
+      this._keyApply();
+      return;
+    }
+    if (!dir && !ok && !floorKey) return;
+    ev.preventDefault();
+    if (ev.repeat && !dir) return;                    // a held OK: one press (its hold runs from the timer)
+    if (floorKey) { this._nextFloor(); return; }
+    if (ok) {
+      const t = this._keyTarget();
+      if (!t) return;
+      const p = { ...t, held: false };
+      if (t.id) p.timer = setTimeout(() => { p.held = true; this._keyAct(p, "hold"); }, HOLD_MS);
+      this._kPress = p;
+      return;
+    }
+    const nav = this._navigable();
+    if (this._kz === "dock") {
+      const items = ["screen", ...DOCK_MODES.map((m) => m.id)], i = Math.max(0, items.indexOf(this._kd));
+      if (dir[1]) this._kd = items[Math.min(items.length - 1, Math.max(0, i - dir[1]))];   // up: along the arc, up
+      else if (dir[0] > 0 && nav.length) {                                                // right: back to the house
+        this._kz = "house";
+        if (!nav.includes(this._kid)) this._kid = this._keyNearest(nav, "corner");
+      }
+    } else if (this._kz !== "house" || !nav.includes(this._kid)) {   // the first arrow picks the middle of the house
+      if (nav.length) { this._kz = "house"; this._kid = this._keyNearest(nav, "middle"); }
+      else { this._kz = "dock"; this._kd = this._mode; }
+    } else {
+      const next = this._keyStep(nav, this._kid, dir);
+      if (next) this._kid = next;
+      else if (dir[0] < 0 || dir[1] > 0) { this._kz = "dock"; this._kd = this._mode; }   // left / down past the house: the dock
+    }
+    this._keyApply();
+  }
+
+  // entities the remote can pick on the floor shown: on the picture, with a tap or hold action (page-only covers too)
+  _navigable() {
+    const out = [];
+    if (!this._page || !this._page.centres || !this._hass) return out;
+    for (const id of this._page.centres.keys()) {
+      if (this._local.has(id)) { out.push(id); continue; }
+      const e = this._map.get(id);
+      if (!e || e.selectable === false || !this._hass.states[e.entity]) continue;
+      if ([e.tap_action, e.hold_action].some((a) => a && a.action && a.action !== "none")) out.push(id);
+    }
+    return out;
+  }
+
+  // the entity nearest the middle of all of them, or the bottom-left corner (coming back from the dock)
+  _keyNearest(nav, where) {
+    const c = nav.map((id) => this._page.centres.get(id)), xs = c.map((p) => p[0]), ys = c.map((p) => p[1]);
+    const t = where === "corner" ? [Math.min(...xs), Math.max(...ys)]
+      : [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+    let best = nav[0], bd = Infinity;
+    nav.forEach((id, n) => { const d = Math.hypot(c[n][0] - t[0], c[n][1] - t[1]); if (d < bd) { bd = d; best = id; } });
+    return best;
+  }
+
+  // the next entity in a direction: ahead of the one picked (within about 70 degrees), near and close to the line
+  _keyStep(nav, from, dir) {
+    const [cx, cy] = this._page.centres.get(from);
+    let best = null, bs = Infinity;
+    for (const id of nav) {
+      if (id === from) continue;
+      const [x, y] = this._page.centres.get(id), vx = x - cx, vy = y - cy;
+      const along = vx * dir[0] + vy * dir[1], side = Math.abs(vx * dir[1] - vy * dir[0]);
+      if (along <= 0 || side > along * 3) continue;
+      const sc = along + 2 * side;
+      if (sc < bs) { bs = sc; best = id; }
+    }
+    return best;
+  }
+
+  // what OK acts on: the entity picked, the dock screen's room / camera / vacuum, or a dock button
+  _keyTarget() {
+    if (this._kz === "house") return this._kid ? { id: this._kid } : null;
+    if (this._kz !== "dock") return null;
+    if (this._kd === "screen") { const r = this._selected(); return r ? { id: r.id } : null; }
+    return { mode: this._kd };
+  }
+
+  _keyAct(p, which) {
+    if (p.id) this._run(p.id, which);
+    else {
+      const b = this._dock.querySelector(`.btn[data-mode="${p.mode}"]`);
+      if (b) b.click();
+    }
+    this._keyApply();
+  }
+
+  _keyDrop() {
+    if (!this._kz) return;
+    this._kz = null;
+    this._keyApply();
+  }
+
+  // the pick shown: a white ring on the dock's button / screen, a glow on the page (the entity, or the screen's room)
+  _keyApply() {
+    if (!this._dock) return;
+    this._dock.querySelectorAll(".btn, .screen").forEach((el) =>
+      el.classList.toggle("kf", this._kz === "dock" && (el.dataset.mode || "screen") === this._kd));
+    let hl = null;
+    if (this._kz === "house") hl = this._kid;
+    else if (this._kz === "dock" && this._kd === "screen") { const r = this._selected(); hl = r ? r.id : null; }
+    if (hl === (this._hlSent || null)) return;
+    this._hlSent = hl;
+    this._post({ gf: "highlight", id: hl });
   }
 
   // rooms of the heating mode: the floor's climates mapped to Home Assistant, in the order of the YAML
