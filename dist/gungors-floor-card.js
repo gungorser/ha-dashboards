@@ -75,8 +75,11 @@
  * hovered ({gf: "highlight", id}). OK / Enter: a short press is its tap, a long one (HOLD_MS) its hold. Left or
  * down with nothing further that way goes into the dock (at the button of the mode shown): up / down walk its
  * buttons and its screen, OK presses them (the screen: tap / hold of the room, camera or vacuum shown, which
- * glows), right goes back to the house. Colour keys: red the dock, blue the side panel's control, green / yellow
- * the house. OK on floor / cut opens its choices: up / down (floors) or left / right (cuts) walk them, OK picks, any other arrow closes. Back / Esc closes a popup, else leaves the dock, else drops the pick.
+ * glows), right goes back to the house. Colour keys, one per corner of the picture (each corner's UI carries a
+ * small triangle of its key's colour, kiosk only): red the dock (bottom left), green the clock (top left, nothing
+ * to press: a white frame only), yellow the family panel (bottom right: left / right / up / down walk its
+ * portraits, OK runs the portrait's tap_action, left past the first goes to the house), blue the side panel's
+ * control (top right). The same key again takes the pick back to the middle of the house. OK on floor / cut opens its choices: up / down (floors) or left / right (cuts) walk them, OK picks, any other arrow closes. Back / Esc closes a popup, else leaves the dock, else drops the pick.
  * Side panel: the entity picked with the remote shows top right on the picture (its bottom-left corner cut
  * along the house's long axis): icon in its colour, name, floor, its state in plain words and, where it has one, a bar. A long OK moves
  * the control into the panel (its frame turns gold) instead of the hold action, for the types that have one:
@@ -183,7 +186,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.42.0";
+const CARD_VERSION = "1.43.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -282,6 +285,8 @@ const SIDE_CSS = `
   .side{position:absolute;right:1.5%;top:3%;width:${SIDE.w}px;height:${SIDE.h}px;transform-origin:100% 0;pointer-events:none;
         font-family:"Segoe UI",Roboto,Arial,sans-serif;color:#e8f4ff;display:none;line-height:1.15}
   .side.on{display:block}
+  .side .ck{position:absolute;top:0;right:0;width:0;height:0;border-style:solid;border-width:0 22px 22px 0;
+            border-color:transparent #1e88e5 transparent transparent;filter:drop-shadow(0 0 4px rgba(0,0,0,.6))}
   .side .bg{position:absolute;left:0;top:0;width:100%;height:100%;-webkit-clip-path:polygon(${SIDE_POLY});clip-path:polygon(${SIDE_POLY});
             background:linear-gradient(160deg,rgba(13,59,133,.93),rgba(7,29,69,.95) 70%)}
   .side svg.edge{position:absolute;left:0;top:0;width:${SIDE.w}px;height:${SIDE.h}px;overflow:visible}
@@ -375,6 +380,13 @@ const CSS = `${SIDE_CSS}
   .fam svg{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;filter:drop-shadow(0 0 10px rgba(90,180,255,.6))}
   .fam polyline{fill:none;stroke:#a8dcff;stroke-width:4;stroke-linejoin:round}
   .fam path{fill:none;stroke:rgba(168,220,255,.8);stroke-width:3}
+  .fam.kf .fc:not(.kf) img{opacity:.4}
+  .fam.kf polyline{stroke:#fff;stroke-width:6}
+  .hud.kf .sedge polyline{stroke:#fff;stroke-width:6}
+  .ck{position:absolute;width:0;height:0;border-style:solid;pointer-events:none;filter:drop-shadow(0 0 4px rgba(0,0,0,.6))}
+  .hud .ck{top:0;left:0;border-width:22px 22px 0 0;border-color:#43a047 transparent transparent transparent}
+  .dock>.ck{bottom:0;left:0;border-width:22px 0 0 22px;border-color:transparent transparent transparent #e53935}
+  .fam .ck{bottom:0;right:0;border-width:0 0 44px 44px;border-color:transparent transparent #fdd835 transparent}
   .clock{font:bold 26px "Consolas","Courier New",monospace;color:#7dff9a;text-shadow:0 0 8px rgba(125,255,154,.7)}
   .date{font-size:12px;color:#9fcfff}
   .title{font-size:12px;letter-spacing:1px;color:#ffd66b;margin:4px 0 2px;text-transform:uppercase}
@@ -1047,6 +1059,7 @@ class GungorsFloorCard extends HTMLElement {
     const hudClip = HUD_PTS.map(([x, y]) => `${x.toFixed(1)}px ${y.toFixed(1)}px`).join(",");
     const hudEdge = HUD_PTS.slice(1).map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");   // no top / left line
     const clip = g.poly.map(([x, y]) => `${x}px ${y}px`).join(",");
+    const ck = (KIOSK || (KIOSK = kioskUrl())) ? '<div class="ck"></div>' : "";   // the colour key's corner mark
     d.innerHTML = `<div class="disc" style="-webkit-clip-path:polygon(${clip});clip-path:polygon(${clip})"></div>
       <svg class="rim" viewBox="0 0 ${g.W} ${R}"><polygon points="${pts(1)}"/>${lines}</svg>${btns}${opts}
       <style>${g.rows}</style>
@@ -1054,7 +1067,7 @@ class GungorsFloorCard extends HTMLElement {
         <svg class="sedge" viewBox="0 0 ${g.screen.w} ${g.screen.h}"><polyline points="${g.screen.edge}"/></svg><div class="list"></div></div>
       <div class="hud" style="top:${R - H}px;left:0;width:${HUD.w}px;height:${HUD.h}px;-webkit-clip-path:polygon(${hudClip});clip-path:polygon(${hudClip})">
         <svg class="sedge" viewBox="0 0 ${HUD.w} ${HUD.h}"><polyline points="${hudEdge}"/></svg>
-        <span class="clock"></span><span class="date"></span><span class="title"></span></div>${this._famHtml(R)}`;
+        <span class="clock"></span><span class="date"></span><span class="title"></span>${ck}</div>${this._famHtml(R)}${ck}`;
     d.querySelectorAll(".opt").forEach((b) => b.addEventListener("click", () => this._flyPick(+b.dataset.opt)));
     d.querySelectorAll(".fam .fc.act").forEach((c) => c.addEventListener("click", () => this._famTap(c)));
     d.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
@@ -1173,7 +1186,7 @@ class GungorsFloorCard extends HTMLElement {
       return;                                         // a text field or a Home Assistant dialog has the keys
     const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
     const colour = COLOUR_KEYS[k] || COLOUR_CODES[ev.keyCode];
-    if (colour) {                                     // red: the dock, blue: the side panel, green / yellow: the house
+    if (colour) {                                     // red: the dock, green: the clock, yellow: the family, blue: the side panel
       ev.preventDefault();
       if (down && !ev.repeat) this._keyFocus(colour);
       return;
@@ -1209,7 +1222,7 @@ class GungorsFloorCard extends HTMLElement {
     if (back) {                                       // back: out of the dock, else drop the pick; nothing picked: not ours
       if (!this._kz) return;
       ev.preventDefault();
-      this._kz = this._kz === "dock" && this._navigable().includes(this._kid) ? "house" : null;
+      this._kz = this._kz !== "house" && this._navigable().includes(this._kid) ? "house" : null;
       this._keyApply();
       return;
     }
@@ -1226,7 +1239,11 @@ class GungorsFloorCard extends HTMLElement {
       return;
     }
     const nav = this._navigable();
-    if (this._kz === "dock") {
+    if (this._kz === "fam") {                         // the family panel: walk its portraits (left, middle, top)
+      const cells = this._famCells(), i = cells.indexOf(this._kf), step = dir[0] || -dir[1];
+      if (i + step >= 0 && i + step < cells.length) this._kf = cells[i + step];
+      else if (step < 0) { this._keyHome(nav); if (!nav.length) this._kz = null; }   // before the first: the house
+    } else if (this._kz === "dock") {
       const items = DOCK_KEYS, i = Math.max(0, items.indexOf(this._kd));
       if (dir[1]) this._kd = items[Math.min(items.length - 1, Math.max(0, i - dir[1]))];   // up: round the edges, up
       else if (dir[0] > 0 && nav.length) {                                                // right: back to the house
@@ -1285,6 +1302,7 @@ class GungorsFloorCard extends HTMLElement {
   // what OK acts on: the entity picked, the dock screen's room / camera / vacuum, or a dock button
   _keyTarget() {
     if (this._kz === "house") return this._kid ? { id: this._kid } : null;
+    if (this._kz === "fam") return this._famAct(this._kf) ? { fam: this._kf } : null;
     if (this._kz !== "dock") return null;
     if (this._kd === "screen") { const r = this._selected(); return r ? { id: r.id } : null; }
     return { mode: this._kd };
@@ -1297,7 +1315,10 @@ class GungorsFloorCard extends HTMLElement {
     }
     const e = p.id && this._map.get(p.id), act = e && e[which + "_action"];
     if (act && act.action === "more-info") return;    // Home Assistant's dialog: the remote could not close it (Fully keeps back)
-    if (p.id) this._run(p.id, which);
+    if (p.fam != null) {                              // a family portrait: its tap action, short or long OK
+      const c = this._dock.querySelector(`.fam .fc[data-fam="${p.fam}"]`);
+      if (c) this._famTap(c);
+    } else if (p.id) this._run(p.id, which);
     else {
       const b = this._dock.querySelector(`[data-mode="${p.mode}"]`);
       if (b) b.click();
@@ -1305,22 +1326,39 @@ class GungorsFloorCard extends HTMLElement {
     this._keyApply();
   }
 
-  // a colour key: move the remote's focus to the dock, the side panel's control or the house
+  // a colour key: move the remote's focus to its corner (red the dock, green the clock, yellow the family panel,
+  // blue the side panel's control); the same key again: back to the middle of the house
   _keyFocus(colour) {
     const nav = this._navigable();
     clearTimeout(this._kPress && this._kPress.timer);
     this._kPress = null;
     if (this._fly) { this._fly = null; this._buildDock(); }
-    if (colour === "red") { this._kCtl = false; this._kz = "dock"; if (!DOCK_KEYS.includes(this._kd)) this._kd = this._mode; }
+    const here = { red: this._kz === "dock", green: this._kz === "hud", yellow: this._kz === "fam", blue: !!this._kCtl }[colour];
+    this._kCtl = false;
+    const fam = colour === "yellow" && this._famCells();
+    if (here || (fam && !fam.length)) this._keyHome(nav, true);   // again (or no family shown): the house
+    else if (colour === "red") { this._kz = "dock"; if (!DOCK_KEYS.includes(this._kd)) this._kd = this._mode; }
+    else if (colour === "green") this._kz = "hud";
+    else if (fam) { this._kz = "fam"; if (!fam.includes(this._kf)) this._kf = fam.filter((i) => this._famAct(i)).concat(fam)[0]; }
     else {
-      if (nav.length) {
-        this._kz = "house";
-        if (!nav.includes(this._kid)) this._kid = this._keyNearest(nav, "middle");
-      }
+      this._keyHome(nav);
       this._keyApply();                               // the panel follows the pick before its control is taken
-      this._kCtl = colour === "blue" && this._kz === "house" && !!(this._sideCtl() || {}).ctl;
+      this._kCtl = this._kz === "house" && !!(this._sideCtl() || {}).ctl;
     }
     this._keyApply();
+  }
+
+  // the pick into the house: the entity picked before (middle: the middle of the house); nothing to pick: no pick
+  _keyHome(nav, middle) {
+    if (!nav.length) { this._kz = null; return; }
+    this._kz = "house";
+    if (middle || !nav.includes(this._kid)) this._kid = this._keyNearest(nav, "middle");
+  }
+
+  // the family portraits shown (indices of famGeo's cells), none while the panel is hidden (sun mode)
+  _famCells() {
+    if (this._mode === "sun") return [];
+    return (this._config.family || []).map((f, i) => (f ? i : -1)).filter((i) => i >= 0).slice(0, 3);
   }
 
   // e: the pointerdown; one on a floor / cut choice or on the floor / cut cell leaves the choices to its click
@@ -1351,6 +1389,12 @@ class GungorsFloorCard extends HTMLElement {
     this._dock.querySelectorAll("[data-mode], .screen").forEach((el) =>
       el.classList.toggle("kf", this._kz === "dock" && !fly && (el.dataset.mode || "screen") === this._kd));
     this._dock.querySelectorAll(".opt").forEach((el) => el.classList.toggle("kf", fly && +el.dataset.opt === this._flyI));
+    const hud = this._dock.querySelector(".hud"), fam = this._dock.querySelector(".fam");
+    if (hud) hud.classList.toggle("kf", this._kz === "hud");
+    if (fam) {
+      fam.classList.toggle("kf", this._kz === "fam");
+      fam.querySelectorAll(".fc").forEach((c) => c.classList.toggle("kf", this._kz === "fam" && +c.dataset.fam === this._kf));
+    }
     let hl = null;
     if (this._kz === "house") hl = this._kid;
     else if (this._kz === "dock" && this._kd === "screen") { const r = this._selected(); hl = r ? r.id : null; }
@@ -1488,7 +1532,7 @@ class GungorsFloorCard extends HTMLElement {
       <div class="w">${i.word}</div><div class="v">${i.value}</div>
       ${i.bar != null ? `<div class="bar"><div class="fill"></div><div class="knob"></div></div>
       <div class="arr" style="left:76px">◀</div><div class="arr" style="right:4px">▶</div>` : ""}
-      <div class="hint">${hint}</div>`;
+      <div class="hint">${hint}</div><div class="ck"></div>`;
     el.querySelector(".name").textContent = name;
   }
 
@@ -1584,7 +1628,7 @@ class GungorsFloorCard extends HTMLElement {
                 style="${rectCss({ x: c.box.x.toFixed(1), y: c.box.y.toFixed(1), w: c.box.w.toFixed(1), h: c.box.h.toFixed(1) })}"></div>`;
     }).join("");
     return `<div class="fam${this._mode === "sun" ? " off" : ""}" style="left:${this._page.W - g.W}px;top:${R - g.H}px;width:${g.W}px;height:${g.H}px;-webkit-transform:scale(${FAM.scale});transform:scale(${FAM.scale});-webkit-transform-origin:100% 100%;transform-origin:100% 100%">${cells}
-      <svg viewBox="0 0 ${g.W} ${g.H}"><polyline points="${g.edge.map(P).join(" ")}"/><path d="${g.div.map(([a, b]) => `M${P(a)}L${P(b)}`).join("")}"/></svg></div>`;
+      <svg viewBox="0 0 ${g.W} ${g.H}"><polyline points="${g.edge.map(P).join(" ")}"/><path d="${g.div.map(([a, b]) => `M${P(a)}L${P(b)}`).join("")}"/></svg>${KIOSK ? '<div class="ck"></div>' : ""}</div>`;
   }
 
   _famAct(i) {
