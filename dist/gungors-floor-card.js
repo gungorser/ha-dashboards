@@ -73,13 +73,13 @@
  * Fully Kiosk does; elsewhere keys do nothing and nothing below shows): the arrow keys pick the entities of the floor shown by where they are on the
  * picture (the boxes of the page's "ready"; only entities with a tap or hold action), the one picked glows as if
  * hovered ({gf: "highlight", id}). OK / Enter: a short press is its tap, a long one (HOLD_MS) its hold. Left or
- * down with nothing further that way goes into the dock (at the button of the mode shown): up / down walk its
+ * down with nothing further that way goes into the dock (at its button picked last, else the floor button): up / down walk its
  * buttons and its screen, OK presses them (the screen: tap / hold of the room, camera or vacuum shown, which
  * glows), right goes back to the house. Colour keys, one per corner of the picture (each corner's UI carries a
  * small triangle of its key's colour, kiosk only): red the dock (bottom left), green the clock (top left, nothing
  * to press: a white frame only), yellow the family panel (bottom right: left / right / up / down walk its
  * portraits, OK runs the portrait's tap_action, left past the first goes to the house), blue the side panel's
- * control (top right). The same key again takes the pick back to the middle of the house. OK on floor / cut opens its choices: up / down (floors) or left / right (cuts) walk them, OK picks, any other arrow closes. Back / Esc closes a popup, else leaves the dock, else drops the pick.
+ * control (top right). The same key again takes the pick back to the house. The house pick starts at the entity picked last (back from a menu), else the floor's focus, else the middle; the dock's at its button picked last, else the floor button. OK on floor / cut opens its choices: up / down (floors) or left / right (cuts) walk them, OK picks, any other arrow closes. Back / Esc closes a popup, else leaves the dock, else drops the pick.
  * Side panel: the entity picked with the remote shows in the top-right corner of the picture (open to its top and right edges; its bottom-left corner cut
  * along the house's long axis): icon in its colour, name, floor, its state in plain words and, where it has one, a bar. A long OK moves
  * the control into the panel (its frame turns gold) instead of the hold action, for the types that have one:
@@ -122,6 +122,8 @@
  *                                     #   climate red, other green
  *   floors:
  *     - floor: kat0                   # floor of the page (its render folder under base)
+ *       focus: salon_light            # optional: the page entity the remote picks first on this floor
+ *                                     #   (default: the one nearest the middle of the house)
  *       rooms:                        # optional: per room (a zone of the floor's render) while the sun is
  *         salon:                      #   up: default + sun + covers x how far its covers are open (their
  *           sun: 1                    #   mean); a room left out: sun 1, covers 2;
@@ -188,7 +190,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.45.0";
+const CARD_VERSION = "1.46.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -481,7 +483,8 @@ class GungorsFloorCard extends HTMLElement {
       if (f.vacuum_opacity != null && !(typeof f.vacuum_opacity === "number" && f.vacuum_opacity >= 0 && f.vacuum_opacity <= 1)
           && !(typeof f.vacuum_opacity === "string" && /^\w+\.\w+$/.test(f.vacuum_opacity)))
         err(`${f.floor}.vacuum_opacity: a number 0-1 or an entity (e.g. an input_number 0-100 %)`);
-      return { floor: String(f.floor), map, fixed, local, rooms, show, vacuum: f.vacuum_map || null,
+      if (f.focus != null && typeof f.focus !== "string") err(`${f.floor}.focus: a page entity (e.g. salon_light)`);
+      return { floor: String(f.floor), focus: f.focus || null, map, fixed, local, rooms, show, vacuum: f.vacuum_map || null,
                vacuumOpacity: f.vacuum_opacity != null ? f.vacuum_opacity : null };
     });
     const colors = config.colors == null ? {} : config.colors;
@@ -508,6 +511,7 @@ class GungorsFloorCard extends HTMLElement {
   _useFloor() {
     const f = this._floors[this._fi];
     this._floor = f.floor;
+    this._focus = f.focus;
     this._map = f.map;
     this._fixed = f.fixed;
     this._local = f.local;
@@ -1294,15 +1298,15 @@ class GungorsFloorCard extends HTMLElement {
       if (dir[1]) this._kd = items[Math.min(items.length - 1, Math.max(0, i - dir[1]))];   // up: round the edges, up
       else if (dir[0] > 0 && nav.length) {                                                // right: back to the house
         this._kz = "house";
-        if (!nav.includes(this._kid)) this._kid = this._keyNearest(nav, "corner");
+        this._kid = this._keyStart(nav);
       }
-    } else if (this._kz !== "house" || !nav.includes(this._kid)) {   // the first arrow picks the middle of the house
-      if (nav.length) { this._kz = "house"; this._kid = this._keyNearest(nav, "middle"); }
-      else { this._kz = "dock"; this._kd = this._mode; }
+    } else if (this._kz !== "house" || !nav.includes(this._kid)) {   // the first arrow: the house pick (_keyStart)
+      if (nav.length) { this._kz = "house"; this._kid = this._keyStart(nav); }
+      else { this._kz = "dock"; this._kd = this._keyDockStart(); }
     } else {
       const next = this._keyStep(nav, this._kid, dir);
       if (next) this._kid = next;
-      else if (dir[0] < 0 || dir[1] > 0) { this._kz = "dock"; this._kd = this._mode; }   // left / down past the house: the dock
+      else if (dir[0] < 0 || dir[1] > 0) { this._kz = "dock"; this._kd = this._keyDockStart(); }   // left / down past the house: the dock
     }
     this._keyApply();
   }
@@ -1373,7 +1377,7 @@ class GungorsFloorCard extends HTMLElement {
   }
 
   // a colour key: move the remote's focus to its corner (red the dock, green the clock, yellow the family panel,
-  // blue the side panel's control); the same key again: back to the middle of the house
+  // blue the side panel's control); the same key again: back to the house, where its pick was
   _keyFocus(colour) {
     const nav = this._navigable();
     clearTimeout(this._kPress && this._kPress.timer);
@@ -1382,8 +1386,8 @@ class GungorsFloorCard extends HTMLElement {
     const here = { red: this._kz === "dock", green: this._kz === "hud", yellow: this._kz === "fam", blue: !!this._kCtl }[colour];
     this._kCtl = false;
     const fam = colour === "yellow" && this._famCells();
-    if (here || (fam && !fam.length)) this._keyHome(nav, true);   // again (or no family shown): the house
-    else if (colour === "red") { this._kz = "dock"; if (!DOCK_KEYS.includes(this._kd)) this._kd = this._mode; }
+    if (here || (fam && !fam.length)) this._keyHome(nav);   // again (or no family shown): the house
+    else if (colour === "red") { this._kz = "dock"; this._kd = this._keyDockStart(); }
     else if (colour === "green") this._kz = "hud";
     else if (fam) { this._kz = "fam"; if (!fam.includes(this._kf)) this._kf = fam.filter((i) => this._famAct(i)).concat(fam)[0]; }
     else {
@@ -1394,11 +1398,23 @@ class GungorsFloorCard extends HTMLElement {
     this._keyApply();
   }
 
-  // the pick into the house: the entity picked before (middle: the middle of the house); nothing to pick: no pick
-  _keyHome(nav, middle) {
+  // the pick into the house (see _keyStart); nothing to pick: no pick
+  _keyHome(nav) {
     if (!nav.length) { this._kz = null; return; }
     this._kz = "house";
-    if (middle || !nav.includes(this._kid)) this._kid = this._keyNearest(nav, "middle");
+    this._kid = this._keyStart(nav);
+  }
+
+  // where the house pick starts: the entity picked last (back from a menu), else the floor's focus, else the middle
+  _keyStart(nav) {
+    if (nav.includes(this._kid)) return this._kid;
+    if (this._focus && nav.includes(this._focus)) return this._focus;
+    return this._keyNearest(nav, "middle");
+  }
+
+  // where the dock pick starts: its button picked last, else the floor button
+  _keyDockStart() {
+    return DOCK_KEYS.includes(this._kd) ? this._kd : "floor";
   }
 
   // the family portraits shown (indices of famGeo's cells), none while the panel is hidden (sun mode)
