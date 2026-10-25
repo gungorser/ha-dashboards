@@ -91,7 +91,7 @@
  * In the control: OK as above, up / down (or back, if the browser passes it on; Fully Kiosk keeps it for its
  * settings) give the control back to the house; 15 s without a key too, and 60 s drop the pick. Other types keep
  * their hold action, except more-info: from the remote it does nothing (Home Assistant's dialog could not be
- * closed without back). A popup of the card closes with OK or back.
+ * closed without back). A popup of the card closes with OK or back; a confirmation window: left / right, OK presses.
  * Channel up / down (page up / down): the next floor. Nothing shows until a key is pressed; a touch or click
  * drops it. Keys in a text field or a Home Assistant dialog (more-info) are left to it.
  *
@@ -110,6 +110,8 @@
  *     - /local/family/melike.svg
  *     # an entry can also be {image: path, tap_action: {...}}: a tap on that portrait runs the action
  *     # (the actions of the entities, e.g. perform-action script.telefon_caldir to ring that person's phone)
+ *     # Any action can ask first: `confirmation: {text: "..."}` (or true: "Emin misin?") opens a window with
+ *     # Vazgeç / Evet; the action runs only on Evet. Remote: left / right pick a button (Evet first), OK presses it.
  *   cut: front                        # optional: wall cut shown first: none, front (default: the outer walls
  *                                     #   facing the camera cut down) or all (every wall cut down)
  *   lighting:                         # optional: brightness of the house's world light (the page's
@@ -186,7 +188,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.44.0";
+const CARD_VERSION = "1.45.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -233,6 +235,12 @@ const POP_CSS = `
   .body{overflow-y:auto;padding:0 8px 8px}
   .msg{padding:24px 12px;text-align:center;opacity:.8;font:15px Roboto,"Segoe UI",Arial,sans-serif}
   .cam{display:block;width:100%;height:auto;border-radius:8px;background:#000}
+  .ask{padding:8px 12px 20px;text-align:center;font:17px Roboto,"Segoe UI",Arial,sans-serif}
+  .ask p{margin:4px 0 20px}
+  .ask button{min-width:110px;margin:0 8px;padding:10px 18px;border:2px solid transparent;border-radius:22px;cursor:pointer;
+              font:500 16px Roboto,"Segoe UI",Arial,sans-serif;background:rgba(127,127,127,.25);color:inherit;outline:none}
+  .ask button.yes{background:var(--primary-color,#03a9f4);color:#fff}
+  .ask button.kf{border-color:#fff;box-shadow:0 0 0 3px rgba(255,255,255,.6)}
 `;
 
 // icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
@@ -840,6 +848,11 @@ class GungorsFloorCard extends HTMLElement {
 
   // one action of YAML (an entity's tap / hold, a family portrait's tap); e: the entity it belongs to ({} for none)
   _act(act, e) {
+    if (act.confirmation) {                           // ask first: the action runs only on Evet
+      const c = act.confirmation, { confirmation, ...rest } = act;
+      this._openConfirm(typeof c === "object" && c.text ? c.text : "Emin misin?", () => this._act(rest, e));
+      return;
+    }
     const fire = (type, detail) => this.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
     switch (act.action) {
       case "toggle":
@@ -902,6 +915,28 @@ class GungorsFloorCard extends HTMLElement {
     } catch (e) {
       root.querySelector(".body").textContent = "popup card failed: " + e.message;
     }
+  }
+
+  // a confirmation window: text, Vazgeç and Evet (focused for the remote's OK); yes() runs on Evet
+  _openConfirm(text, yes) {
+    this._closePopup();
+    const host = document.createElement("div");
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = `<style>${POP_CSS}</style><div class="pop"><div class="box" style="width:min(380px,calc(100vw - 24px))">
+      <div class="head"><span></span></div><div class="ask"><p></p><button class="no">Vazgeç</button><button class="yes kf">Evet</button></div></div></div>`;
+    root.querySelector(".ask p").textContent = text;
+    const btns = [root.querySelector(".no"), root.querySelector(".yes")];
+    const pop = { host, card: null, confirm: { i: 1, btns, yes },
+                  onKey: (ev) => { if (ev.key === "Escape" && !KIOSK) this._closePopup(); } };
+    btns[0].addEventListener("click", () => this._closePopup());
+    btns[1].addEventListener("click", () => { this._closePopup(); yes(); });
+    const back = root.querySelector(".pop");
+    let downOnBack = false;                           // as in _openPopup: only a tap that started beside the window
+    back.addEventListener("pointerdown", (ev) => { downOnBack = ev.target === ev.currentTarget; });
+    back.addEventListener("click", (ev) => { if (ev.target === ev.currentTarget && downOnBack) this._closePopup(); downOnBack = false; });
+    window.addEventListener("keydown", pop.onKey);
+    document.body.appendChild(host);
+    this._pop = pop;
   }
 
   _closePopup() {
@@ -1176,6 +1211,17 @@ class GungorsFloorCard extends HTMLElement {
     if (!this.isConnected || !this._page || !this._hass) return;
     if (!KIOSK && !(KIOSK = kioskUrl())) return;    // not the kiosk: the remote is off
     const k = ev.key, back = k === "Escape" || k === "GoBack" || k === "BrowserBack";
+    if (this._pop && this._pop.confirm) {             // a confirmation: left / right pick a button, OK presses it, back cancels
+      const c = this._pop.confirm, okKey = k === "Enter" || k === " " || k === "Select";
+      const side = k === "ArrowLeft" ? 0 : k === "ArrowRight" ? 1 : null;
+      if (!(okKey || back || side != null || k === "ArrowUp" || k === "ArrowDown")) return;
+      ev.preventDefault();
+      if (!down || ev.repeat) return;
+      if (back) this._closePopup();
+      else if (okKey) c.btns[c.i].click();
+      else if (side != null) { c.i = side; c.btns.forEach((b, j) => b.classList.toggle("kf", j === side)); }
+      return;
+    }
     if (this._pop) {                                  // a popup is open: back or OK closes it, other keys are its own
       const okKey = k === "Enter" || k === " " || k === "Select";
       if (down && !ev.repeat && (back || okKey)) { ev.preventDefault(); this._closePopup(); }
