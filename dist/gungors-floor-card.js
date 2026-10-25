@@ -49,6 +49,10 @@
  * a second failure shows its error in the popup (no toast) and nothing is stopped. Closing the popup stops
  * a stream the card started (`stop`, else camera.turn_off). A camera whose stream runs over RTSP
  * (Eufy with RTSP on) needs start_rtsp_livestream / stop_rtsp_livestream, not the P2P ones.
+ * A camera that is not streaming and has nothing to start (no `start`, no turn_on: e.g. the baby monitor's
+ * Avent camera, which opens its stream when its picture is asked for) shows its picture at once, without
+ * waiting for the `streaming` state. `action: camera` with an `entity` also works as the tap_action of a
+ * family portrait (`tap_action: {action: camera, entity: camera.x, title: "..."}`).
  *
  * Decor: per floor `show` (YAML) shows or leaves out the decor parts of the floor's render (kat0 araba: the
  * car on the driveway), fixed (true / false) or following an entity (shown while it is "on"); the card sends
@@ -190,7 +194,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.46.0";
+const CARD_VERSION = "1.47.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
@@ -909,7 +913,7 @@ class GungorsFloorCard extends HTMLElement {
     window.addEventListener("keydown", pop.onKey);
     document.body.appendChild(host);
     this._pop = pop;
-    if (act.camera) { this._cameraBody(pop, root.querySelector(".body"), act.camera); return; }
+    if (act.camera) { this._cameraBody(pop, root.querySelector(".body"), act.camera, !!act.direct); return; }
     try {
       const helpers = await window.loadCardHelpers();
       if (this._pop !== pop) return;                  // closed while the helpers loaded
@@ -971,6 +975,7 @@ class GungorsFloorCard extends HTMLElement {
     // stop only a stream that started: a failed start leaves nothing running (stopping it would fail too)
     let started = false;
     this._openPopup({ title: title || st.attributes.friendly_name || entity, camera: entity,
+                      direct: !start && st.state !== "streaming",       // nothing to start: ask for the picture at once
                       onClose: stop ? () => { if (started) call(stop).catch(() => {}); } : null });
     const pop = this._pop;
     // a sleeping battery camera may miss the first start (Eufy gives up after 15 s): try once more
@@ -984,7 +989,7 @@ class GungorsFloorCard extends HTMLElement {
   }
 
   // popup body of a live view: a message until the camera streams, then its live picture
-  _cameraBody(pop, body, entity) {
+  _cameraBody(pop, body, entity, direct) {
     const msg = (t) => { body.innerHTML = `<div class="msg"></div>`; body.firstChild.textContent = t; };
     msg("starting the stream...");
     // camera_proxy / camera_proxy_stream of the camera, with its access token (it changes every few minutes)
@@ -1005,7 +1010,7 @@ class GungorsFloorCard extends HTMLElement {
       const blob = await r.blob(), head = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
       return head[0] === 0xff && head[1] === 0xd8 ? blob : null;
     };
-    const streaming = () => { const s = this._hass.states[entity]; return !!s && s.state === "streaming"; };
+    const streaming = () => { const s = this._hass.states[entity]; return !!s && (direct || s.state === "streaming"); };
     const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
     const show = async () => {
       pop.update = null;
@@ -1049,7 +1054,7 @@ class GungorsFloorCard extends HTMLElement {
       }
       if (this._pop === pop && !isLive && !streaming()) msg("the camera stopped streaming");
     };
-    pop.update = () => { const s = this._hass.states[entity]; if (s && s.state === "streaming") show(); };
+    pop.update = () => { const s = this._hass.states[entity]; if (s && (direct || s.state === "streaming")) show(); };
     pop.fail = (t) => { pop.update = null; clearTimeout(pop.timer); msg(t); };
     const wait = () => setTimeout(() => {
       if (this._pop !== pop || !pop.update) return;
