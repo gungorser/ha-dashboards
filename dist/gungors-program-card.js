@@ -33,7 +33,12 @@
 // that range (an entity target without an area gets its own row). Each occurrence is one bar
 // from its start to its end, also across midnight; overlapping ones stack. Tap a bar to edit
 // it, a day in the week header to open that day; "Yeni" adds an entry.
-const VERSION = "1.10.2";
+// Preheat: a program with a set temperature rule (= or ≥) has "Başlangıçta hedefte olsun" in the
+// editor (on by default; off writes `climate: preheat: false`). A thermostat with gungors preheat
+// then heats early so the room is there by the start: the list shows "Ön ısıtma" (state
+// preheating, pause stops it) and the estimate for the next one, the timeline an orange striped
+// piece before the bar (solid: started, dashed: estimate).
+const VERSION = "1.11.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -282,6 +287,7 @@ function parseProgram(raw) {
   const target = typeof d.target === "string" ? [d.target] : d.target;
   if (!Array.isArray(target) || !target.length) return null;
   const rules = {};
+  let preheat = true;
   const add = (attr, v) => {
     if (!attr || attr in rules) return false;
     rules[attr] = valueIn(attr, v);
@@ -294,10 +300,14 @@ function parseProgram(raw) {
   for (const dom of DOMAINS) {
     if (d[dom] === undefined) continue;
     if (!d[dom] || typeof d[dom] !== "object" || Array.isArray(d[dom])) return null;
-    for (const [k, v] of Object.entries(d[dom])) if (!add(attrOf(dom, k), v)) return null;
+    for (const [k, v] of Object.entries(d[dom])) {
+      if (dom === "climate" && k === "preheat") { if (typeof v !== "boolean") return null; preheat = v; continue; }
+      if (!add(attrOf(dom, k), v)) return null;
+    }
   }
   const timeless = typeof d.timeless === "string" ? d.timeless : null;
-  return Object.keys(rules).length ? { target, rules, ...sun, ...(timeless ? { timeless } : {}) } : null;
+  return Object.keys(rules).length
+    ? { target, rules, ...sun, ...(timeless ? { timeless } : {}), ...(preheat ? {} : { preheat: false }) } : null;
 }
 // The description text of a program: YAML, rules grouped by domain (as the integration writes it).
 function yamlScalarText(v) {
@@ -308,7 +318,7 @@ function yamlScalarText(v) {
   if (/^[^\s\-?:,[\]{}#&*!|>'"%@`][^:#,[\]{}]*$/.test(t) && !/^(y|n|yes|no|true|false|on|off|null|~|[-+.]?\d.*|\.(inf|nan))$/i.test(t) && t === t.trim()) return t;
   return JSON.stringify(t);
 }
-function dumpProgram(target, rules, sun = {}) {
+function dumpProgram(target, rules, sun = {}, preheat = true) {
   const out = [`target: ${yamlScalarText(target)}`];
   for (const k of ["start", "end"]) if (sun[k]) out.push(`${k}: ${sunText(sun[k])}`);
   for (const dom of DOMAINS) {
@@ -323,6 +333,7 @@ function dumpProgram(target, rules, sun = {}) {
         : yamlScalarText(valueOut(k, obj ? v.eq : v));
       out.push(`  ${ATTRS[k].name}: ${text}`);
     }
+    if (dom === "climate" && !preheat) out.push("  preheat: false");
   }
   return out.join("\n") + "\n";
 }
@@ -337,6 +348,13 @@ function linesOf(rules) {
   return lines;
 }
 const isSet = (v) => !!(v && typeof v === "object" && !Array.isArray(v) && v.set);
+// The temperature a program preheats for: a set rule's = or ≥ value (null: no preheat).
+function preheatTarget(rules) {
+  const v = rules?.temperature;
+  if (!isSet(v)) return null;
+  return "eq" in v ? v.eq : "min" in v ? v.min : null;
+}
+const preheats = (p) => !!p && !p.timeless && p.preheat !== false && preheatTarget(p.rules) !== null;
 function ruleText(attr, v) {
   const a = ATTRS[attr];
   if (!a) return `${attr}: ${JSON.stringify(v)}`;
@@ -472,6 +490,16 @@ ha-card{padding:16px;color:var(--primary-text-color)}
   .ev .mini{gap:1px}
   .sw{width:9px;height:9px}
 }
+.chip.pre{border-color:var(--warning-color,#ff9800);color:var(--warning-color,#ff9800)}
+.sub.pre-on{color:var(--warning-color,#ff9800);font-weight:500}
+.ev.pre{border-left:3px solid var(--warning-color,#ff9800);background:repeating-linear-gradient(135deg,rgba(255,152,0,.22) 0 6px,rgba(255,152,0,.07) 6px 12px);box-shadow:inset 0 0 0 1px rgba(255,152,0,.5);border-radius:5px 0 0 5px;color:var(--warning-color,#ff9800);padding:0 4px;gap:3px}
+.ev.pre.est{border-left-style:dashed;opacity:.85}
+.ev.pre ha-icon{--mdc-icon-size:14px;display:inline-flex;flex:none}
+.ev.join{border-top-left-radius:0;border-bottom-left-radius:0}
+.ev .mini ha-icon.pre{color:var(--warning-color,#ff9800)}
+.pre-box{margin-top:8px;padding:8px;border-radius:6px;border:1px solid var(--divider-color)}
+.pre-box label.check{display:flex;font-size:inherit;color:var(--primary-text-color);margin:0}
+.pre-box ha-icon{--mdc-icon-size:18px;color:var(--warning-color,#ff9800);display:inline-flex}
 .empty{padding:16px 4px;color:var(--secondary-text-color);text-align:center}
 .err{padding:8px 10px;margin:8px 0;border-radius:6px;border:1px solid var(--error-color);color:var(--error-color);font-size:.875rem}
 .note{font-size:.75rem;color:var(--secondary-text-color);margin-top:4px}
@@ -671,7 +699,7 @@ class GungorsProgramCard extends HTMLElement {
       sDate: p.date, sTime: `${pad(h)}:00`, eDate: eh === 0 ? addDays(p.date, 1) : p.date, eTime: `${pad(eh)}:00`,
       sMode: "time", sOff: "0", eMode: "time", eOff: "0",
       mode: "none", days: [], rawRrule: "",
-      targets: [], lines: [], rawMode: false, rawBad: false, rawDesc: "", timeless: false,
+      targets: [], lines: [], rawMode: false, rawBad: false, rawDesc: "", timeless: false, preheat: true,
     };
   }
 
@@ -710,7 +738,7 @@ class GungorsProgramCard extends HTMLElement {
       eMode: p?.end ? p.end.event : "time", eOff: String(p?.end ? p.end.offset : 0),
       mode: rr.mode, days: rr.days, rawRrule: rr.raw,
       targets: p ? p.target.map((t) => (String(t).includes(".") ? t : this._areaIdOf(t) || t)) : [],
-      lines: p ? linesOf(p.rules) : [],
+      lines: p ? linesOf(p.rules) : [], preheat: p?.preheat !== false,
       rawMode: !p, rawBad: !p, rawDesc: ev.description || "",
     };
   }
@@ -771,7 +799,7 @@ class GungorsProgramCard extends HTMLElement {
   _programText(f) {
     if (f.rawMode) return f.rawDesc;
     const target = f.targets.map((t) => (String(t).includes(".") ? t : this._areaName(t)));
-    return dumpProgram(target, this._rulesOf(f.lines), f.timeless ? {} : this._sunOf(f));
+    return dumpProgram(target, this._rulesOf(f.lines), f.timeless ? {} : this._sunOf(f), f.timeless || f.preheat !== false);
   }
 
   _validate(f) {
@@ -1110,8 +1138,16 @@ class GungorsProgramCard extends HTMLElement {
     const name = (uid) => this._programs.find((x) => x.uid === uid)?.summary || "başka program";
     switch (p.state) {
       case "running": return p.timeless || p.end?.dateTime ? `Çalışıyor · bitiş ${this._when(p._en)}` : "Çalışıyor";
-      case "paused": return p.paused_by ? `${name(p.paused_by)} duraklattı, bitince devam eder` : "";
-      case "scheduled": return p.start?.dateTime ? `Sıradaki: ${this._when(p._st)}` : `Sıradaki: ${fmtDay(p.start.date)}`;
+      case "paused": return p.paused_by ? `${name(p.paused_by)} duraklattı, bitince devam eder`
+        : p._st && p._st > new Date() ? `Başlamadan duraklatıldı · ${this._when(p._st)}` : "";
+      case "scheduled": {
+        const next = p.start?.dateTime ? `Sıradaki: ${this._when(p._st)}` : `Sıradaki: ${fmtDay(p.start.date)}`;
+        return p.preheat?.start ? `${next} · ön ısıtma ≈ ${this._when(new Date(p.preheat.start))}` : next;
+      }
+      case "preheating": {
+        const t = preheatTarget(p._p?.rules);
+        return `Ön ısıtma · ${t ?? ""}°'ye ${this._when(p._st)}'de${p.preheat?.start ? ` (${this._when(new Date(p.preheat.start))}'de başladı)` : ""}`;
+      }
       case "idle": return "Zamansız";
       case "done": return p.start ? `Bitti · ${fmtDate(partsInTz(p._st, this._tz).date)}` : "Bitti";
       default: return "Okunamayan açıklama";
@@ -1121,14 +1157,16 @@ class GungorsProgramCard extends HTMLElement {
   _rowHtml(p) {
     const where = p._p ? [...new Set(this._rowsOf(p._p.target).map((k) => this._rowName(k)))].join(", ") : "";
     const k = esc(this._key(p));
-    const on = p.state === "running" || p.state === "paused";
+    const on = p.state === "running" || p.state === "paused" || p.state === "preheating";
+    const ahead = p._st && p._st > new Date(); // preheating, or paused while preheating
     const ib = (a, icon, label, extra = "") => `<button class="ibtn ${extra}" data-a="${a}" data-k="${k}" title="${label}" aria-label="${label}"><ha-icon icon="${icon}"></ha-icon></button>`;
     let buttons = ib("pin", p.pinned ? "mdi:pin" : "mdi:pin-outline", p.pinned ? "Sabitlemeyi kaldır" : "Üste sabitle", p.pinned ? "pinned" : "");
     if (on) {
-      buttons += p.state === "paused" ? ib("resume", "mdi:play", "Devam ettir") : ib("pause", "mdi:pause", "Duraklat");
-      buttons += ib("end", "mdi:stop", p.timeless ? "Durdur" : "Şimdi bitir");
+      buttons += p.state === "paused" ? ib("resume", "mdi:play", "Devam ettir") : ib("pause", "mdi:pause", p.state === "preheating" ? "Ön ısıtmayı durdur (programı duraklat)" : "Duraklat");
+      if (!ahead) buttons += ib("end", "mdi:stop", p.timeless ? "Durdur" : "Şimdi bitir");
     } else if (p.timeless) buttons += ib("play", "mdi:play", "Başlat");
-    const chips = `${p.timeless ? `<span class="chip"><ha-icon icon="mdi:gesture-tap"></ha-icon>Zamansız</span>` : ""}${p._p ? this._ruleChips(p) : `<span class="chip warn">Okunamayan açıklama</span>`}`;
+    const pre = preheats(p._p) ? `<span class="chip pre" title="Başlangıçta hedefte olsun"><ha-icon icon="mdi:thermometer-chevron-up"></ha-icon>Ön ısıtma</span>` : "";
+    const chips = `${p.timeless ? `<span class="chip"><ha-icon icon="mdi:gesture-tap"></ha-icon>Zamansız</span>` : ""}${pre}${p._p ? this._ruleChips(p) : `<span class="chip warn">Okunamayan açıklama</span>`}`;
     const durations = this._startFor === this._key(p)
       ? `<div class="durs" role="group" aria-label="Süre">${[[30, "30 dk"], [60, "1 sa"], [120, "2 sa"], [240, "4 sa"], [480, "8 sa"], [720, "12 sa"], [0, "24 sa"]]
         .map(([m, l]) => `<button class="btn small ${m ? "" : "primary"}" data-a="go" data-k="${k}" data-m="${m}">${l}</button>`).join("")}</div>`
@@ -1136,7 +1174,7 @@ class GungorsProgramCard extends HTMLElement {
     return `<div class="act ${p.state === "paused" ? "paused" : ""} ${on ? "on" : ""}">
         <div class="t" data-a="edit" data-k="${k}">
           <div class="sum">${esc(p.summary || "(başlıksız)")}${p.state === "paused" ? ` <span class="chip">Duraklatıldı</span>` : ""}</div>
-          <div class="sub">${esc([where, this._stateText(p)].filter(Boolean).join(" · "))}</div>
+          <div class="sub ${p.state === "preheating" ? "pre-on" : ""}">${esc([where, this._stateText(p)].filter(Boolean).join(" · "))}</div>
           <div class="chips">${chips}</div>
           ${durations}
         </div>
@@ -1147,7 +1185,7 @@ class GungorsProgramCard extends HTMLElement {
   // Pinned first, then running, timeless, by the next start; ended ones folded under "Geçmiş".
   _programsHtml() {
     if (!this._programs.length) return `<div class="empty">Henüz program yok.</div>`;
-    const rank = { running: 0, paused: 0, idle: 1, scheduled: 2, invalid: 3, done: 4 };
+    const rank = { running: 0, paused: 0, preheating: 0, idle: 1, scheduled: 2, invalid: 3, done: 4 };
     const sorted = [...this._programs].sort((a, b) =>
       (b.pinned - a.pinned) || (rank[a.state] - rank[b.state]) ||
       ((a.state === "scheduled" && b.state === "scheduled") ? a._st - b._st : 0) ||
@@ -1171,6 +1209,9 @@ class GungorsProgramCard extends HTMLElement {
     const now = new Date();
     const today = partsInTz(now, tz).date;
     const minPct = days === 1 ? 4 : 6; // a short bar still gets room for its icons
+    // The preheat of each program's next occurrence (from gungors/programs), by uid.
+    const pre = new Map(this._programs.filter((p) => p.preheat?.start && p._st)
+      .map((p) => [p.uid, { at: p._st.getTime(), start: new Date(p.preheat.start).getTime(), active: p.preheat.active }]));
     const rows = new Map();
     for (const ev of this._events) {
       if (!(ev._st.getTime() < re && ev._en.getTime() > rs)) continue;
@@ -1203,14 +1244,19 @@ class GungorsProgramCard extends HTMLElement {
         const bars = evs.map((ev) => {
           const l = pos(ev._st.getTime()), r = pos(ev._en.getTime());
           const shown = Math.max(r, l + minPct);
-          let lane = lanes.findIndex((end) => end <= l);
+          const ph = pre.get(ev.uid);
+          const preL = ph && ph.at === ev._st.getTime() && ph.start < ph.at && ph.at > rs && ph.start < re ? pos(ph.start) : null;
+          const from = preL === null ? l : Math.min(l, preL);
+          let lane = lanes.findIndex((end) => end <= from);
           if (lane < 0) { lane = lanes.length; lanes.push(0); }
           lanes[lane] = shown;
           const cls = [ev._st <= now && ev._en > now ? "now" : "", ev._p ? "" : "bad",
             ev._st.getTime() < rs ? "cl" : "", ev._en.getTime() > re ? "cr" : ""].join(" ");
           const tip = `${ev.summary || ""} ${this._timeText(ev)}\n` + (ev._p ? Object.entries(ev._p.rules).map(([k, v]) => ruleText(k, v)).join(", ") : "Okunamayan açıklama");
-          return `<button class="ev ${cls}" data-a="edit" data-k="${esc(this._key(ev))}" title="${esc(tip)}" style="left:${l}%;width:${Math.min(100, shown) - l}%;top:calc(${lane} * var(--lane) + 3px)">
-            <span class="tm">${this._tmHtml(ev)}</span><span class="sm">${esc(ev.summary || "(başlıksız)")}</span>${ev._p ? `<span class="mini">${Object.entries(ev._p.rules).map(([k, v]) => ruleMini(k, v)).join("")}</span>` : ""}</button>`;
+          const preBar = preL === null || l - preL <= 0 ? "" : `<button class="ev pre ${ph.active ? "" : "est"}" data-a="edit" data-k="${esc(this._key(ev))}" title="${esc(`${ph.active ? "Ön ısıtma" : "Tahmini ön ısıtma"} ${partsInTz(new Date(ph.start), tz).time}–${partsInTz(ev._st, tz).time}`)}" style="left:${preL}%;width:${l - preL}%;top:calc(${lane} * var(--lane) + 3px)"><ha-icon icon="mdi:thermometer-chevron-up"></ha-icon>${ph.active ? `<span class="tm">${partsInTz(new Date(ph.start), tz).time}</span>` : ""}</button>`;
+          const mark = preheats(ev._p) ? `<ha-icon class="pre" icon="mdi:thermometer-chevron-up"></ha-icon>` : "";
+          return `${preBar}<button class="ev ${cls} ${preBar ? "join" : ""}" data-a="edit" data-k="${esc(this._key(ev))}" title="${esc(tip)}" style="left:${l}%;width:${Math.min(100, shown) - l}%;top:calc(${lane} * var(--lane) + 3px)">
+            <span class="tm">${this._tmHtml(ev)}</span><span class="sm">${esc(ev.summary || "(başlıksız)")}</span>${ev._p ? `<span class="mini">${mark}${Object.entries(ev._p.rules).map(([k, v]) => ruleMini(k, v)).join("")}</span>` : ""}</button>`;
         });
         return `<div class="tr"><div class="room">${esc(key === "x:?" ? "Hatalı" : this._rowName(key))}</div><div class="track" style="height:calc(${lanes.length} * var(--lane) + 6px)">${grid}${bars.join("")}</div></div>`;
       }).join("");
@@ -1311,7 +1357,12 @@ class GungorsProgramCard extends HTMLElement {
       return `<div class="rule">${attrSel}${opSel}${val}${sw}<button class="x" data-a="delrule" data-i="${i}" aria-label="Kuralı sil">×</button></div>`;
     }).join("");
     const hint = f.targets.length ? "" : `<div class="note">Önce oda ya da cihaz seç; özellikler onların türüne göre listelenir.</div>`;
-    return `<div class="field"><label>Kurallar</label><div class="form" style="gap:6px">${f.lines.length ? `<div class="rule hdr" aria-hidden="true"><span>Uygula</span></div>` : ""}${lines}</div>${hint}
+    const target = f.timeless ? null : preheatTarget(this._rulesOf(f.lines));
+    const at = f.allDay || f.sMode !== "time" ? "başlangıçta" : `${f.sTime}'de`;
+    const pre = target === null || num(target) === null ? "" : `<div class="pre-box">
+        <label class="check"><input type="checkbox" data-f="preheat" data-rr ${f.preheat !== false ? "checked" : ""}><ha-icon icon="mdi:thermometer-chevron-up"></ha-icon>Başlangıçta hedefte olsun (ön ısıtma)</label>
+        <div class="note">Isıtma, oda ${esc(at)} ${esc(target)}°'de olsun diye gerektiği kadar erken başlar (en fazla 3 saat). Ön ısıtma programın parçasıdır: duraklatılınca durur.</div></div>`;
+    return `<div class="field"><label>Kurallar</label><div class="form" style="gap:6px">${f.lines.length ? `<div class="rule hdr" aria-hidden="true"><span>Uygula</span></div>` : ""}${lines}</div>${hint}${pre}
       <button class="link" data-a="addrule" style="margin-top:6px">+ Kural ekle</button>
       <div class="note">Uygula açık: sistem kuralı kendisi uygular (gerekirse ışığı ya da ısıtmayı açar) ve program bitince cihaz varsayılana döner (ışık kapalı, renk beyaz, ısıtma kapalı, perde gündüz açık / gece kapalı). Kapalı: kapalı cihaz kurala uyar sayılır, sadece kurala uymayan değişikliğe izin verilmez; bitince kural kalkar.</div></div>`;
   }
