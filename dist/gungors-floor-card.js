@@ -162,6 +162,9 @@
  *         salon_blind:                # background that follows Home Assistant (e.g. a manual blind):
  *           entity: cover.salon_cover #   no hover, no border, no tap, like none, but the page shows the
  *           selectable: false         #   entity's state (a cover's position, a light's colour)
+ *         mutfak_blind:               # a manual cover without a device: a position number 0-100
+ *           entity: input_number.mutfak_cover_position   #   (input_number / number) set by hand,
+ *           selectable: false         #   so the page follows the real blind
  *         garaj_door:                 # background with a fixed value instead of the page's default:
  *           entity: none              #   cover: position 0-100 (0 closed, 100 open)
  *           value: 0                  #   light: [r, g, b, intensity 0-1], e.g. [255, 255, 255, 0] = off
@@ -194,9 +197,13 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.47.0";
+const CARD_VERSION = "1.48.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
+// a cover may also be a position number 0-100 (a manual cover without a device, set by hand)
+const NUMBER_DOMAINS = ["input_number", "number"];
+const isNumberEntity = (entity) => NUMBER_DOMAINS.includes(entity.split(".")[0]);
+const numberPos = (st) => { const v = Number(st.state); return Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0; };
 const INPUTS = { light: 1, cover: 1, climate: 1, valve: 1 };     // page entity types that take a value
 const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
 
@@ -699,7 +706,7 @@ class GungorsFloorCard extends HTMLElement {
         continue;
       }
       const domain = e.entity.split(".")[0];
-      if (domainOf(type) !== domain) out.push(`${id}: a ${type} entity, ${e.entity} is a ${domain}`);
+      if (domainOf(type) !== domain && !(type === "cover" && NUMBER_DOMAINS.includes(domain))) out.push(`${id}: a ${type} entity, ${e.entity} is a ${domain}`);
       else if (!hass.states[e.entity]) out.push(`${id}: ${e.entity} is not in Home Assistant (set it to none)`);
       if (e.humidity != null && (type !== "climate" || typeof e.humidity !== "string" || !hass.states[e.humidity]))
         out.push(`${id}: humidity is a sensor in Home Assistant, for a climate only (${e.humidity})`);
@@ -836,6 +843,7 @@ class GungorsFloorCard extends HTMLElement {
       return [st.state || "-", a.hvac_action || "-", n(a.current_temperature), n(a.temperature)].join(" ");
     }
     if (type === "valve") return st.state === "open" || st.state === "opening" ? 1 : 0;
+    if (isNumberEntity(e.entity)) return numberPos(st);
     const pos = st.attributes.current_position;
     return pos != null ? pos : st.state === "closed" ? 0 : 100;
   }
@@ -1500,12 +1508,13 @@ class GungorsFloorCard extends HTMLElement {
         ok: () => { this._sidePending = null; call("light", st.state === "on" ? "turn_off" : "turn_on"); } };
     }
     if (type === "cover") {
-      const local = !st, own = local ? this._localValue(id) : a.current_position != null ? a.current_position : st.state === "closed" ? 0 : 100;
+      const local = !st, num = !local && isNumberEntity(e.entity);
+      const own = local ? this._localValue(id) : num ? numberPos(st) : a.current_position != null ? a.current_position : st.state === "closed" ? 0 : 100;
       if (pend != null && Math.abs(own - pend) <= 1) this._sidePending = null;
       const v = na ? 0 : pend != null ? pend : own, moving = st && (st.state === "opening" || st.state === "closing");
-      const hasPos = local || a.current_position != null;
+      const hasPos = local || num || a.current_position != null;
       const set = (n) => { this._sidePending = { v: n, t: Date.now() };
-        if (local) this._setLocal(id, n); else if (hasPos) call("cover", "set_cover_position", { position: n }); else call("cover", n ? "open_cover" : "close_cover"); };
+        if (local) this._setLocal(id, n); else if (num) call(e.entity.split(".")[0], "set_value", { value: n }); else if (hasPos) call("cover", "set_cover_position", { position: n }); else call("cover", n ? "open_cover" : "close_cover"); };
       return { kind: local ? "kapı" : "perde", icon: v > 0 ? "mdi:window-shutter-open" : "mdi:window-shutter", color: "#5fb4ff", on: v > 0,
         word: na ? "ulaşılamıyor" : moving ? (st.state === "opening" ? "açılıyor" : "kapanıyor") : v >= 100 ? "açık" : v <= 0 ? "kapalı" : "kısmen açık",
         value: na ? "—" : pct(v), bar: v, adj: "pozisyon", okWord: moving ? "dur" : v > 0 ? "kapat" : "aç", ctl: !na,
