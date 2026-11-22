@@ -30,9 +30,12 @@
 // resume_program) and stop (a timed one: the running occurrence ends now; a timeless one:
 // gungors.stop_program). A timeless program (no time of its own, e.g. "Bebek uyku", kept by
 // gungors: save_timeless_program / delete_timeless_program; "Zamansız" in the editor, which also
-// turns an entry into one and back) starts with play and a duration
-// (gungors.start_program, 24 h by default); while it runs it pauses the programs it conflicts
-// with, and they come back when it ends. Below, a timeline of the week or of one day (Hafta / Gün), one row per room with a program in
+// turns an entry into one and back) starts with play: a dialog asks when (now or a date and
+// time) and how long (24 h by default), and lists the timed programs the run would pause
+// (websocket `gungors/conflicts`). While it runs it pauses them, and each comes back when it
+// ends unless "Bitince devam etsin" is cleared for it in the dialog (gungors.start_program
+// `start`, `duration`, `no_resume`). A run waiting for its start is listed first under
+// Zamansız (after the pinned ones); play sets it again, stop cancels it. Below, a timeline of the week or of one day (Hafta / Gün), one row per room with a program in
 // that range (an entity target without an area gets its own row). Each occurrence is one bar
 // from its start to its end, also across midnight; overlapping ones stack. Tap a bar to edit
 // it, a day in the week header to open that day; "Yeni" adds an entry.
@@ -45,7 +48,7 @@
 // Layout of this file: constants, value helpers, time and sun, YAML, the program model
 // (parse / dump / rules), rule chips, CSS, then the card: state and loading, the form model,
 // actions (save, delete, services), events, and rendering (list, timeline, form).
-const VERSION = "1.12.0";
+const VERSION = "1.13.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -63,8 +66,8 @@ const DOMAINS = Object.keys(DOMAIN_NAMES);
 const WD = [["MO", "Pzt"], ["TU", "Sal"], ["WE", "Çar"], ["TH", "Per"], ["FR", "Cum"], ["SA", "Cmt"], ["SU", "Paz"]];
 const REPEAT_MODES = [["none", "Tekrar yok"], ["daily", "Her gün"], ["weekly", "Haftanın belirli günleri"], ["custom", "Özel (RRULE)"]];
 const TIME_MODES = [["time", "Saat"], ["sunrise", "Gün doğumu"], ["sunset", "Gün batımı"]];
-// Run lengths offered when a timeless program starts (minutes; 0 = the integration's 24 h).
-const DURATIONS = [[30, "30 dk"], [60, "1 sa"], [120, "2 sa"], [240, "4 sa"], [480, "8 sa"], [720, "12 sa"], [0, "24 sa"]];
+// Run lengths offered when a timeless program starts (minutes).
+const DURATIONS = [[30, "30 dk"], [60, "1 sa"], [120, "2 sa"], [240, "4 sa"], [480, "8 sa"], [720, "12 sa"], [1440, "24 sa"]];
 const COLOR_NAMES = { white: [255, 255, 255], red: [255, 0, 0], green: [0, 128, 0], blue: [0, 0, 255], yellow: [255, 255, 0], orange: [255, 165, 0], purple: [128, 0, 128] };
 const PREHEAT_ICON = "mdi:thermometer-chevron-up";
 
@@ -577,7 +580,14 @@ textarea{min-height:140px;font-family:var(--code-font-family,monospace);font-siz
 .ibtn.pinned{color:var(--primary-color)}
 .head .right{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .act.on .sum{font-weight:600}
-.durs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.durs{display:flex;flex-wrap:wrap;gap:6px}
+.durs .btn.on{background:var(--primary-color);border-color:var(--primary-color);color:var(--text-primary-color,#fff)}
+.dlg-bg{position:fixed;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.45)}
+.dlg{box-sizing:border-box;width:100%;max-width:440px;max-height:calc(100vh - 32px);overflow:auto;padding:16px;border-radius:12px;background:var(--card-background-color,#fff);color:var(--primary-text-color);box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.cf{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--divider-color)}
+.cf:last-child{border-bottom:0}
+.cf .t{flex:1;min-width:0}
+.cf label.check{font-size:.8rem;color:var(--secondary-text-color);margin:0;white-space:nowrap}
 .act.paused .sum{color:var(--secondary-text-color)}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--primary-color);outline-offset:1px}
 `;
@@ -994,11 +1004,53 @@ class GungorsProgramCard extends HTMLElement {
       resume ? "Devam ettirilemedi" : "Duraklatılamadı");
   }
 
-  _startTimeless(p, minutes) {
-    this._startFor = null;
-    const data = { uid: p.uid };
-    if (minutes) data.duration = { hours: Math.floor(minutes / 60), minutes: minutes % 60 };
-    this._act(() => this._svc("start_program", data), "Başlatılamadı");
+  // ---------- start dialog (timeless programs) ----------
+  _openStart(p) {
+    const at = partsInTz(new Date(Date.now() + 36e5), this._tz);
+    this._dlg = {
+      uid: p.uid, summary: p.summary || "", mode: "now",
+      date: at.date, time: `${at.time.slice(0, 2)}:00`, minutes: 1440,
+      conflicts: null, resume: {}, error: null, busy: false, seq: 0,
+    };
+    this._render();
+    this._loadConflicts();
+  }
+
+  // The chosen start (Date), or null for now.
+  _dlgStart(d) { return d.mode === "at" && d.date && d.time ? new Date(zonedIso(d.date, d.time, this._tz)) : null; }
+  _dlgDuration(d) { return { hours: Math.floor(d.minutes / 60), minutes: d.minutes % 60 }; }
+
+  // What the run would pause, again whenever the start or the length changes.
+  async _loadConflicts() {
+    const d = this._dlg;
+    if (!d) return;
+    const seq = ++d.seq;
+    const msg = { type: "gungors/conflicts", uid: d.uid, duration: this._dlgDuration(d) };
+    const start = this._dlgStart(d);
+    if (start) msg.start = start.toISOString();
+    d.conflicts = null;
+    this._render();
+    let list;
+    try { list = (await this._hass.callWS(msg)).conflicts || []; } catch (e) { list = []; d.error = `Çakışmalar okunamadı: ${errText(e)}`; }
+    if (this._dlg !== d || d.seq !== seq) return; // closed, or asked again meanwhile
+    d.conflicts = list;
+    for (const c of list) if (!(c.uid in d.resume)) d.resume[c.uid] = true;
+    this._render();
+  }
+
+  _startTimeless() {
+    const d = this._dlg;
+    const start = this._dlgStart(d);
+    if (d.mode === "at" && !start) { d.error = "Başlangıç tarihini ve saatini gir."; this._render(); return; }
+    if (start && start <= new Date()) { d.error = "Başlangıç geçmişte kaldı: ileri bir saat seç ya da Şimdi."; this._render(); return; }
+    const data = { uid: d.uid, duration: this._dlgDuration(d) };
+    if (start) data.start = start.toISOString();
+    const noResume = (d.conflicts || []).map((c) => c.uid).filter((uid) => d.resume[uid] === false);
+    if (noResume.length) data.no_resume = [...new Set(noResume)];
+    d.busy = true; d.error = null; this._render();
+    this._svc("start_program", data).then(() => { this._dlg = null; return this._load(); }, (e) => {
+      d.busy = false; d.error = `Başlatılamadı: ${errText(e)}`; this._render();
+    });
   }
 
   // ---------- events ----------
@@ -1021,8 +1073,11 @@ class GungorsProgramCard extends HTMLElement {
       }),
       end: byKey((ev) => (ev.timeless ? this._act(() => this._svc("stop_program", { uid: ev.uid }), "Durdurulamadı") : this._endNow(ev))),
       pin: byKey((ev) => this._act(() => this._svc("pin_program", { uid: ev.uid, pinned: !ev.pinned }), "Sabitlenemedi")),
-      play: (el) => { this._startFor = this._startFor === el.dataset.k ? null : el.dataset.k; this._render(); },
-      go: byKey((ev, el) => this._startTimeless(ev, +el.dataset.m || 0)),
+      play: byKey((ev) => this._openStart(ev)),
+      dmode: (el) => { this._dlg.mode = el.dataset.v; this._dlg.error = null; this._loadConflicts(); },
+      dlen: (el) => { this._dlg.minutes = +el.dataset.m; this._loadConflicts(); },
+      dclose: (el, e) => { if (el.classList.contains("dlg-bg") && e.target !== el) return; this._dlg = null; this._render(); },
+      dgo: () => this._startTimeless(),
       fold: (el) => {
         this._folded = toggle(this._folded, el.dataset.s);
         try { localStorage.setItem("gungors-program-folded", JSON.stringify(this._folded)); } catch (_) { /* per-browser convenience only */ }
@@ -1054,7 +1109,7 @@ class GungorsProgramCard extends HTMLElement {
   _onClick(e) {
     const el = e.target.closest("[data-a]");
     if (!el || el.disabled) return;
-    this._clicks[el.dataset.a]?.(el);
+    this._clicks[el.dataset.a]?.(el, e);
   }
 
   _find(key) {
@@ -1067,6 +1122,15 @@ class GungorsProgramCard extends HTMLElement {
   // data-rr: the form is drawn again once the change is made.
   _onInput(e) {
     const el = e.target;
+    if (this._dlg && "d" in el.dataset) {
+      // the start dialog: data-d a field, data-dr "bitince devam etsin" of a conflict
+      const d = this._dlg;
+      if ("dr" in el.dataset) { d.resume[el.dataset.dr] = el.checked; return; }
+      d[el.dataset.d] = el.value;
+      d.error = null;
+      if (e.type === "change") this._loadConflicts();
+      return;
+    }
     const f = this._form;
     if (!f) return;
     const rerender = e.type === "change";
@@ -1138,6 +1202,7 @@ class GungorsProgramCard extends HTMLElement {
       case "paused": return p.paused_by ? `${name(p.paused_by)} duraklattı, bitince devam eder`
         : p._st && p._st > new Date() ? `Başlamadan duraklatıldı · ${this._when(p._st)}` : "";
       case "scheduled": {
+        if (p.timeless) return `Başlayacak: ${this._when(p._st)} · bitiş ${this._when(p._en)}`;
         const next = p.start?.dateTime ? `Sıradaki: ${this._when(p._st)}` : `Sıradaki: ${fmtDay(p.start.date)}`;
         return p.preheat?.start ? `${next} · ön ısıtma ≈ ${this._when(new Date(p.preheat.start))}` : next;
       }
@@ -1161,22 +1226,43 @@ class GungorsProgramCard extends HTMLElement {
     if (on) {
       buttons += p.state === "paused" ? ib("resume", "mdi:play", "Devam ettir") : ib("pause", "mdi:pause", p.state === "preheating" ? "Ön ısıtmayı durdur (programı duraklat)" : "Duraklat");
       if (!ahead) buttons += ib("end", "mdi:stop", p.timeless ? "Durdur" : "Şimdi bitir");
-    } else if (p.timeless) buttons += ib("play", "mdi:play", "Başlat");
+    } else if (p.timeless) {
+      buttons += ib("play", "mdi:play", p.state === "scheduled" ? "Başlangıcı değiştir" : "Başlat");
+      if (p.state === "scheduled") buttons += ib("end", "mdi:stop", "İptal et");
+    }
     const pre = preheats(p._p) ? `<span class="chip pre" title="Başlangıçta hedefte olsun"><ha-icon icon="${PREHEAT_ICON}"></ha-icon>Ön ısıtma</span>` : "";
     const chips = `${p.timeless ? `<span class="chip"><ha-icon icon="mdi:gesture-tap"></ha-icon>Zamansız</span>` : ""}${pre}${this._ruleChips(p)}`;
-    const durations = this._startFor === this._key(p)
-      ? `<div class="durs" role="group" aria-label="Süre">${DURATIONS
-        .map(([m, l]) => `<button class="btn small ${m ? "" : "primary"}" data-a="go" data-k="${k}" data-m="${m}">${l}</button>`).join("")}</div>`
-      : "";
     return `<div class="act ${p.state === "paused" ? "paused" : ""} ${on ? "on" : ""}">
         <div class="t" data-a="edit" data-k="${k}">
           <div class="sum">${esc(p.summary || "(başlıksız)")}${p.state === "paused" ? ` <span class="chip">Duraklatıldı</span>` : ""}</div>
           <div class="sub ${p.state === "preheating" ? "pre-on" : ""}">${esc([where, this._stateText(p)].filter(Boolean).join(" · "))}</div>
           <div class="chips">${chips}</div>
-          ${durations}
         </div>
         ${buttons}
       </div>`;
+  }
+
+  // The start dialog: when, how long, and what the run would pause (each may come back after).
+  _startHtml() {
+    const d = this._dlg, b = d.busy ? "disabled" : "";
+    const seg = (a, opts, cur) => opts.map(([v, l]) => `<button class="btn small ${v === cur ? "on" : ""}" data-a="${a}" data-${a === "dlen" ? "m" : "v"}="${v}" aria-pressed="${v === cur}">${l}</button>`).join("");
+    const time = (iso) => this._when(new Date(iso));
+    let conflicts;
+    if (d.conflicts === null) conflicts = `<div class="note">Çakışmalar okunuyor…</div>`;
+    else if (!d.conflicts.length) conflicts = `<div class="note">Çakışan program yok.</div>`;
+    else conflicts = `<div class="note" style="margin:0 0 4px">Çakıştıkları andan itibaren duraklar; işaretli olanlar bu program bitince devam eder, işaretsizler o gün için biter.</div>`
+      + d.conflicts.map((c) => `<div class="cf"><div class="t"><div class="sum">${esc(c.summary || "(başlıksız)")}</div><div class="sub">${esc(`${time(c.start)} – ${time(c.end)}`)}</div></div>
+        <label class="check"><input type="checkbox" data-d data-dr="${esc(c.uid)}" ${d.resume[c.uid] !== false ? "checked" : ""}>Bitince devam etsin</label></div>`).join("");
+    return `<div class="dlg-bg" data-a="dclose"><div class="dlg" role="dialog" aria-modal="true" aria-label="${esc(d.summary)} başlat">
+      <div class="head"><div class="title">${esc(d.summary)}</div><button class="x" data-a="dclose" aria-label="Kapat">×</button></div>
+      <div class="form">
+        <div class="field"><label>Başlangıç</label><div class="seg" role="group" aria-label="Başlangıç">${seg("dmode", [["now", "Şimdi"], ["at", "Saat seç"]], d.mode)}</div>
+          ${d.mode === "at" ? `<div class="grid2" style="margin-top:8px"><input type="date" data-d="date" value="${esc(d.date)}" aria-label="Başlangıç tarihi"><input type="time" data-d="time" value="${esc(d.time)}" aria-label="Başlangıç saati"></div>` : ""}</div>
+        <div class="field"><label>Süre</label><div class="durs" role="group" aria-label="Süre">${seg("dlen", DURATIONS, d.minutes)}</div></div>
+        <div class="field"><label>Çakışan programlar</label>${conflicts}</div>
+        ${d.error ? `<div class="err">${esc(d.error)}</div>` : ""}
+        <div class="actions"><div class="right"><button class="btn" data-a="dclose" ${b}>Vazgeç</button><button class="btn primary" data-a="dgo" ${b}>${d.busy ? "Başlatılıyor…" : "Başlat"}</button></div></div>
+      </div></div></div>`;
   }
 
   // The heading a program goes under: timeless, now (running, paused or preheating now), past
@@ -1195,7 +1281,7 @@ class GungorsProgramCard extends HTMLElement {
     const name = (a, b) => String(a.summary).localeCompare(String(b.summary), "tr");
     const of = (key) => this._programs.filter((p) => this._sectionOf(p) === key);
     return [
-      ["timeless", "Zamansız", of("timeless"), (a, b) => (b.state === "running") - (a.state === "running") || name(a, b)],
+      ["timeless", "Zamansız", of("timeless"), (a, b) => (live[a.state] ?? (a.state === "scheduled" ? 3 : 4)) - (live[b.state] ?? (b.state === "scheduled" ? 3 : 4)) || (a._st || 0) - (b._st || 0) || name(a, b)],
       ["now", "Şu an", of("now"), (a, b) => live[a.state] - live[b.state] || name(a, b)],
       ["next", "Gelecek", of("next"), (a, b) => (a.state === "invalid") - (b.state === "invalid") || (a._st || 0) - (b._st || 0) || name(a, b)],
       ["past", "Geçmiş", of("past"), (a, b) => (b._st || 0) - (a._st || 0) || name(a, b)],
@@ -1407,7 +1493,7 @@ class GungorsProgramCard extends HTMLElement {
 
   _render() {
     if (!this._config) return;
-    this.shadowRoot.innerHTML = `<style>${CSS}</style><ha-card>${this._form ? this._formHtml() : this._listHtml()}</ha-card>`;
+    this.shadowRoot.innerHTML = `<style>${CSS}</style><ha-card>${this._form ? this._formHtml() : this._listHtml()}${this._dlg ? this._startHtml() : ""}</ha-card>`;
   }
 }
 
