@@ -21,9 +21,12 @@
 // The integration checks every save: an unreadable entry or one that conflicts with an
 // overlapping entry on an entity is refused, and its message is shown in the editor.
 //
-// View: every program (gungors websocket `gungors/programs`): pinned ones first
-// (gungors.pin_program, shared by everyone), then running, timeless and by the next start, ended
-// ones folded under "Geçmiş". A running one has pause / resume (gungors.pause_program /
+// View: every program (gungors websocket `gungors/programs`) under four headings, each folds
+// away (remembered per browser): "Zamansız" (timeless ones), "Şu an" (running, paused or
+// preheating now), "Gelecek" (by the next start) and "Geçmiş" (ended, folded at first). Pinned
+// ones (gungors.pin_program, shared by everyone) come first under their heading. The defaults a
+// set rule returns to are gungors configuration (ha-configs program.yaml) and are not shown here.
+// A running one has pause / resume (gungors.pause_program /
 // resume_program) and stop (a timed one: the running occurrence ends now; a timeless one:
 // gungors.stop_program). A timeless program (no time of its own, e.g. "Bebek uyku", kept by
 // gungors: save_timeless_program / delete_timeless_program; "Zamansız" in the editor, which also
@@ -41,8 +44,8 @@
 //
 // Layout of this file: constants, value helpers, time and sun, YAML, the program model
 // (parse / dump / rules), rule chips, CSS, then the card: state and loading, the form model,
-// actions (save, delete, services), events, and rendering (list, timeline, defaults, form).
-const VERSION = "1.11.1";
+// actions (save, delete, services), events, and rendering (list, timeline, form).
+const VERSION = "1.12.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -63,7 +66,6 @@ const TIME_MODES = [["time", "Saat"], ["sunrise", "Gün doğumu"], ["sunset", "G
 // Run lengths offered when a timeless program starts (minutes; 0 = the integration's 24 h).
 const DURATIONS = [[30, "30 dk"], [60, "1 sa"], [120, "2 sa"], [240, "4 sa"], [480, "8 sa"], [720, "12 sa"], [0, "24 sa"]];
 const COLOR_NAMES = { white: [255, 255, 255], red: [255, 0, 0], green: [0, 128, 0], blue: [0, 0, 255], yellow: [255, 255, 0], orange: [255, 165, 0], purple: [128, 0, 128] };
-const SUN_TEMPLATE = "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}";
 const PREHEAT_ICON = "mdi:thermometer-chevron-up";
 
 // ---------- value helpers ----------
@@ -73,7 +75,6 @@ const num = (v) => (v === "" || v === null || v === undefined || isNaN(Number(v)
 const hex = (rgb) => "#" + rgb.map((v) => pad(Number(v).toString(16))).join("");
 const rgbOf = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-const isTpl = (v) => typeof v === "string" && (v.includes("{{") || v.includes("{%"));
 const isEntity = (t) => String(t).includes(".");
 const toggle = (list, x) => (list.includes(x) ? list.filter((y) => y !== x) : [...list, x]);
 const optionsHtml = (opts, cur) => opts.map(([v, l]) => `<option value="${v}" ${v === cur ? "selected" : ""}>${l}</option>`).join("");
@@ -479,14 +480,9 @@ ha-card{padding:16px;color:var(--primary-text-color)}
 .sw{display:inline-block;width:11px;height:11px;border-radius:50%;border:1px solid var(--divider-color)}
 .chip.warn{color:var(--error-color);border-color:var(--error-color)}
 .nav{display:flex;align-items:center;gap:8px}
-.tabs{display:flex;gap:4px;border-bottom:1px solid var(--divider-color);margin:-4px 0 12px}
-.tab{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;font:inherit;color:var(--secondary-text-color);cursor:pointer}
-.tab.on{color:var(--primary-color);border-bottom-color:var(--primary-color);font-weight:500}
-.drow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:8px;align-items:center;padding:4px 0}
+button.sec{display:block;background:none;border:0;padding:0;font-family:inherit;cursor:pointer}
+button.sec:hover{color:var(--primary-color)}
 .note.ok{color:var(--success-color,#43a047)}
-.note code{word-break:break-all}
-.drow code{font-size:.8rem;word-break:break-all}
-.drow .muted{opacity:.6}
 .head.wrap{flex-wrap:wrap}
 .seg{display:inline-flex}
 .seg .btn{border-radius:0}
@@ -595,6 +591,9 @@ class GungorsProgramCard extends HTMLElement {
     this._week = null;
     this._day = null;
     try { this._view = localStorage.getItem("gungors-program-view") === "day" ? "day" : "week"; } catch (_) { this._view = "week"; }
+    // the folded list headings (per browser); "Geçmiş" starts folded
+    this._folded = ["past"];
+    try { const v = JSON.parse(localStorage.getItem("gungors-program-folded")); if (Array.isArray(v)) this._folded = v; } catch (_) { /* default */ }
     this.shadowRoot.addEventListener("click", (e) => this._onClick(e));
     this.shadowRoot.addEventListener("input", (e) => this._onInput(e));
     this.shadowRoot.addEventListener("change", (e) => this._onInput(e));
@@ -615,7 +614,7 @@ class GungorsProgramCard extends HTMLElement {
       this._day = partsInTz(new Date(), this._tz).date;
       this._week = this._monday(this._day);
       this._load();
-    } else if (changed && !this._form && this._tab !== "defaults") this._load(); // entries or pauses changed
+    } else if (changed && !this._form) this._load(); // entries or pauses changed
   }
   get _paused() { return this._calState?.attributes?.paused || []; }
 
@@ -1014,7 +1013,6 @@ class GungorsProgramCard extends HTMLElement {
     };
     const byKey = (run) => (el) => { const ev = this._find(el.dataset.k); if (ev) run(ev, el); };
     return {
-      tab: (el) => { this._tab = el.dataset.t; this._render(); },
       new: () => this._openForm(this._newForm()),
       edit: byKey((ev) => {
         const tl = ev.timeless ? ev : ev._p?.timeless ? this._programs.find((p) => p.timeless && p.uid === ev._p.timeless) : null;
@@ -1025,7 +1023,11 @@ class GungorsProgramCard extends HTMLElement {
       pin: byKey((ev) => this._act(() => this._svc("pin_program", { uid: ev.uid, pinned: !ev.pinned }), "Sabitlenemedi")),
       play: (el) => { this._startFor = this._startFor === el.dataset.k ? null : el.dataset.k; this._render(); },
       go: byKey((ev, el) => this._startTimeless(ev, +el.dataset.m || 0)),
-      past: () => { this._showPast = !this._showPast; this._render(); },
+      fold: (el) => {
+        this._folded = toggle(this._folded, el.dataset.s);
+        try { localStorage.setItem("gungors-program-folded", JSON.stringify(this._folded)); } catch (_) { /* per-browser convenience only */ }
+        this._render();
+      },
       pause: (el) => this._pause(this._find(el.dataset.k), false),
       resume: (el) => this._pause(this._find(el.dataset.k), true),
       prev: nav("prev"), next: nav("next"), today: nav("today"),
@@ -1177,19 +1179,37 @@ class GungorsProgramCard extends HTMLElement {
       </div>`;
   }
 
-  // Pinned first, then running, timeless, by the next start; ended ones folded under "Geçmiş".
+  // The heading a program goes under: timeless, now (running, paused or preheating now), past
+  // (ended), else next (scheduled, paused before its start, unreadable).
+  _sectionOf(p) {
+    if (p.timeless) return "timeless";
+    if (p.state === "done") return "past";
+    if (p.state === "running" || p.state === "preheating") return "now";
+    if (p.state === "paused" && !(p._st && p._st > new Date())) return "now";
+    return "next";
+  }
+
+  // The list headings and their order after the pinned ones.
+  _sections() {
+    const live = { running: 0, preheating: 1, paused: 2 };
+    const name = (a, b) => String(a.summary).localeCompare(String(b.summary), "tr");
+    const of = (key) => this._programs.filter((p) => this._sectionOf(p) === key);
+    return [
+      ["timeless", "Zamansız", of("timeless"), (a, b) => (b.state === "running") - (a.state === "running") || name(a, b)],
+      ["now", "Şu an", of("now"), (a, b) => live[a.state] - live[b.state] || name(a, b)],
+      ["next", "Gelecek", of("next"), (a, b) => (a.state === "invalid") - (b.state === "invalid") || (a._st || 0) - (b._st || 0) || name(a, b)],
+      ["past", "Geçmiş", of("past"), (a, b) => (b._st || 0) - (a._st || 0) || name(a, b)],
+    ];
+  }
+
+  // Each heading folds; an empty one is left out.
   _programsHtml() {
     if (!this._programs.length) return `<div class="empty">Henüz program yok.</div>`;
-    const rank = { running: 0, paused: 0, preheating: 0, idle: 1, scheduled: 2, invalid: 3, done: 4 };
-    const sorted = [...this._programs].sort((a, b) =>
-      (b.pinned - a.pinned) || (rank[a.state] - rank[b.state]) ||
-      ((a.state === "scheduled" && b.state === "scheduled") ? a._st - b._st : 0) ||
-      (a.state === "done" && b.state === "done" ? (b._st || 0) - (a._st || 0) : 0) ||
-      String(a.summary).localeCompare(String(b.summary), "tr"));
-    const current = sorted.filter((p) => p.pinned || p.state !== "done");
-    const past = sorted.filter((p) => !p.pinned && p.state === "done");
-    return `${current.map((p) => this._rowHtml(p)).join("")}
-      ${past.length ? `<button class="link" data-a="past" aria-expanded="${!!this._showPast}" style="margin-top:8px">${this._showPast ? "▾" : "▸"} Geçmiş (${past.length})</button>${this._showPast ? past.map((p) => this._rowHtml(p)).join("") : ""}` : ""}`;
+    return this._sections().filter(([, , list]) => list.length).map(([key, title, list, order]) => {
+      const open = !this._folded.includes(key);
+      const rows = open ? [...list].sort((a, b) => (!!b.pinned - !!a.pinned) || order(a, b)).map((p) => this._rowHtml(p)).join("") : "";
+      return `<button class="sec" data-a="fold" data-s="${key}" aria-expanded="${open}">${open ? "▾" : "▸"} ${title} (${list.length})</button>${rows}`;
+    }).join("");
   }
 
   // Each occurrence is one bar from its start to its end (clipped to the shown range), so a
@@ -1265,10 +1285,8 @@ class GungorsProgramCard extends HTMLElement {
     const label = day
       ? `${WD[weekdayIdx(this._day)][1]} ${fmtDate(this._day)}`
       : `Hafta ${fmtDate(this._week)} – ${fmtDate(addDays(this._week, 6))}`;
-    if (this._tab === "defaults") return `${this._tabsHtml()}${this._defaultsHtml()}`;
-    return `${this._tabsHtml()}<div class="head"><div class="title">${esc(c.title)}</div><button class="btn primary" data-a="new">Yeni</button></div>
+    return `<div class="head"><div class="title">${esc(c.title)}</div><button class="btn primary" data-a="new">Yeni</button></div>
       ${this._error ? `<div class="err">${esc(this._error)} <button class="btn small" data-a="reload">Tekrar dene</button></div>` : ""}
-      <div class="sec">Programlar</div>
       ${this._loading && !this._programs.length ? `<div class="empty">Yükleniyor…</div>` : this._programsHtml()}
       <div class="head wrap" style="margin-top:12px">
         <div class="sec" style="margin:0">${esc(label)}</div>
@@ -1278,45 +1296,6 @@ class GungorsProgramCard extends HTMLElement {
         </div>
       </div>
       ${this._timelineHtml()}`;
-  }
-
-  _tabsHtml() {
-    const t = this._tab || "program";
-    return `<div class="tabs" role="tablist">${[["program", "Program"], ["defaults", "Varsayılanlar"]].map(([k, x]) =>
-      `<button role="tab" class="tab ${k === t ? "on" : ""}" aria-selected="${k === t}" data-a="tab" data-t="${k}">${x}</button>`).join("")}</div>`;
-  }
-
-  // ---------- defaults tab ----------
-  // The defaults as the integration shows them (Home Assistant's names) -> {domain: {attr: value}}.
-  _defaultsDraft() {
-    const cur = this._calState?.attributes?.defaults || {};
-    const d = {};
-    for (const dom of DOMAINS) {
-      d[dom] = {};
-      for (const [k, v] of Object.entries(cur[dom] || {})) {
-        const attr = attrOf(dom, k);
-        if (attr) d[dom][attr] = attr === "position" && v === "sun" ? SUN_TEMPLATE : valueIn(attr, v);
-      }
-    }
-    return d;
-  }
-
-  // Read only: the defaults live in ha-configs packages/program.yaml (gungors 1.9.0).
-  _defaultsHtml() {
-    const d = this._defaultsDraft();
-    const value = (attr, v) => {
-      if (v === undefined) return `<span class="muted">değişmez</span>`;
-      if (attr === "position" && v === SUN_TEMPLATE) return "güneşe göre";
-      if (isTpl(v)) return `<code>${esc(v)}</code>`;
-      return ruleValue(attr, v);
-    };
-    const sec = (title, dom, attrs) => `<div class="sec">${title}</div>${attrs.map((attr) =>
-      `<div class="drow"><span>${esc(ATTRS[attr].label)}</span><span>${value(attr, d[dom][attr])}</span></div>`).join("")}`;
-    return `<div class="head"><div class="title">Varsayılanlar</div></div>
-      <div class="note" style="margin:0 0 8px">Uygula açık bir kural bitince cihaz bu değerlere döner; şablon olanlar sonucu değişince yeniden uygulanır. Değiştirmek için ha-configs <code>packages/program.yaml</code> içindeki <code>defaults:</code> düzenlenir, sonra <code>gungors.reload</code>. Bir cihaz kendi YAML'ındaki <code>- program: {...}</code> ile bunları ezebilir.</div>
-      ${sec("Işık", "light", ["on", "color", "brightness", "color_temp"])}
-      ${sec("Isıtma", "climate", ["hvac_mode", "temperature"])}
-      ${sec("Perde", "cover", ["position"])}`;
   }
 
   _targetsHtml(f) {
