@@ -19,26 +19,22 @@
  * have arrived (the card sends {gf: "fed"} after its first full feed); the dock appears when the page
  * reports {gf: "shown"}. No tap highlight anywhere in the card (mobile would flash it on every tap).
  *
- * Dock: bottom left, three straight edges: a horizontal top with the floor cell (opens the floors upwards), a slanted
- * edge along the render's axis with the buttons heating, sun, cameras and vacuum, and a vertical right edge with the
+ * Dock: bottom left, three straight edges: a horizontal top with the floor cell (opens the floors upwards as boxes, the
+ * roof floor kat3 as a triangle on top), a slanted
+ * edge along the render's axis with the buttons sun, cameras and vacuum, and a vertical right edge with the
  * wall cut cell (opens the cuts to the right); the cells are cut off by mitres. The rest is a screen with the mode's
  * rows, open to the picture's edges. The clock, date and place (room / camera) sit in a cell top left. Family photos (`family`):
- * a panel bottom right, three portrait cells (hidden in the sun mode, where the page draws its compass). Heating: the climates of the floor shown (page type climate, in the order of
- * `entities`), one room at a time; each press of the heating button (while the heating mode is on) goes on
- * to the next room (after the last, back to the first; a floor switch starts at the first). The screen shows
- * the room's name, current and target temperature, hvac mode and action, and humidity (the entity's
- * `humidity` sensor, else its current_humidity attribute); a tap / hold on the screen runs the room's
- * tap_action / hold_action; hovered, it glows in the room's border colour together with the room
- * and its link on the page. The card asks the page for a link
- * line from the screen to the room's radiator ({gf: "link", id, rect: the screen in page px, poly: the dock's
- * outline in page px, so the line comes out of the dock's edge}; {gf: "link", id: null} in the other modes),
- * drawn along the world axes and glowing only while hovered.
+ * a panel bottom right, three portrait cells (hidden in the sun mode, where the page draws its compass). The dock has
+ * no heating mode (removed in 1.49.0): climates show only on the page and in the remote's side panel, with no link line.
  *
  * Cameras: the camera mode of the dock (the cctv button) shows the cameras of the floor shown (page type
  * camera, in the order of `entities`), one at a time; each press of the button (while the camera mode is
  * on) goes on to the next camera. The screen shows its name, state and motion (the entity's `motion`
  * binary sensor, optional); a tap / hold on the screen runs the camera's tap_action / hold_action, hovered
- * it glows with the camera and its link line on the page (as in the heating mode).
+ * it glows with the camera and its link line on the page. The card asks the page for a link line from the screen
+ * to the camera ({gf: "link", id, rect: the screen in page px, poly: the dock's outline in page px, so the line
+ * comes out of the dock's edge}; {gf: "link", id: null} in the sun mode), drawn along the world axes and glowing
+ * only while hovered. The camera mode is the dock's first mode.
  * Live view: `action: camera` (tap_action or hold_action of a camera) opens a popup with the camera's live
  * picture: once the camera streams, its frames (camera_proxy, one after the other), switching to its MJPEG
  * stream (camera_proxy_stream) once that draws (Home Assistant's HLS player stayed blank when opened before the
@@ -62,7 +58,7 @@
  * Vacuum: the vacuum mode of the dock (the robot-vacuum button) shows the robot vacuums of the floor shown (page
  * type vacuum, in the order of `entities`), one at a time (each press goes on to the next): state, status, battery,
  * suction and the last cleaned area; a tap / hold on the screen runs the vacuum's tap_action / hold_action,
- * hovered it glows with the vacuum and its link line on the page (as in the heating mode). The floor's vacuum map
+ * hovered it glows with the vacuum and its link line on the page (as in the camera mode). The floor's vacuum map
  * is shown only in this mode.
  * Vacuum map: per floor `vacuum_map` (YAML), the map camera of a robot vacuum (Dreame / Xiaomi, e.g.
  * camera.xiaomi_robot_vacuum_x20_map). The card sends its picture to the page ({gf: "vacuum", src: the camera's
@@ -145,7 +141,7 @@
  *       entities:                     # page entity -> Home Assistant entity (same domain as its type)
  *         salon_light:
  *           entity: light.salon_light
- *           name: Salon               # optional: name in the dock (heating: the room's name)
+ *           name: Salon               # optional: name in the dock and the remote's panel
  *           gain: 2                   # optional (lights): brightness at full intensity, times the render's
  *           color: "#ff9800"          # optional: border colour of this entity on the page
  *           tap_action:
@@ -168,11 +164,10 @@
  *         garaj_door:                 # background with a fixed value instead of the page's default:
  *           entity: none              #   cover: position 0-100 (0 closed, 100 open)
  *           value: 0                  #   light: [r, g, b, intensity 0-1], e.g. [255, 255, 255, 0] = off
- *         bebek_climate:              # a climate: a room of the heating mode
+ *         bebek_climate:              # a climate (on the page and the remote's panel)
  *           entity: climate.bebek_thermostat
  *           name: Bebek
- *           humidity: sensor.bebek_sensor_humidity   # optional: the room's humidity in the dock
- *           tap_action: {action: more-info}
+ * *           tap_action: {action: more-info}
  *         kapi_kamera:                # a camera: a camera of the camera mode
  *           entity: camera.doorbell
  *           name: Kapı
@@ -197,7 +192,7 @@
  * is that, else null; the page draws arrows on it in the direction it moves. Page entities of other types map to that domain; they take no input, the page only
  * shows their border and reports taps.
  */
-const CARD_VERSION = "1.48.0";
+const CARD_VERSION = "1.49.0";
 const TYPES = { light: "light", cover: "cover" };     // page entity type -> Home Assistant domain (else the type itself)
 const domainOf = (type) => TYPES[type] || type;
 // a cover may also be a position number 0-100 (a manual cover without a device, set by hand)
@@ -209,7 +204,6 @@ const isColor = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
 
 // dock buttons: display modes of the screen, and the floor button (goes to the next floor)
 const DOCK_MODES = [
-  { id: "heating", icon: "mdi:radiator", title: "heating" },
   { id: "sun", icon: "mdi:weather-sunny", title: "sun" },
   { id: "camera", icon: "mdi:cctv", title: "cameras" },
   { id: "vacuum", icon: "mdi:robot-vacuum", title: "vacuum" },
@@ -224,7 +218,7 @@ const CUT_TITLE = { none: "walls: no cut", front: "walls: front cut", all: "wall
 const COLOUR_KEYS = { ColorF0Red: "red", ColorF1Green: "green", ColorF2Yellow: "yellow", ColorF3Blue: "blue" };
 const COLOUR_CODES = { 403: "red", 404: "green", 405: "yellow", 406: "blue", 183: "red", 184: "green", 185: "yellow", 186: "blue" };
 // the remote's walk through the dock (up = next): the screen, then round the edges from the bottom right
-const DOCK_KEYS = ["screen", "cut", "heating", "sun", "camera", "vacuum", "floor"];
+const DOCK_KEYS = ["screen", "cut", "sun", "camera", "vacuum", "floor"];
 const CUT_LABEL = { none: "duvar", front: "ön kesik", all: "hepsi" };
 const CUT_KEY = "gungors-floor-card.cut";
 const savedCut = () => { try { return localStorage.getItem(CUT_KEY); } catch (e) { return null; } };
@@ -259,7 +253,11 @@ const POP_CSS = `
 // icon of the floor button: the number in the floor's id (kat1 -> mdi:home-floor-1)
 const floorLabel = (id) => { const m = /(\d+)/.exec(id); return m ? "Kat " + m[1] : id; };
 const rectCss = (r) => `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px`;
-const floorIcon = (id) => { const m = /(\d+)/.exec(id); return m && +m[1] <= 3 ? "mdi:home-floor-" + m[1] : "mdi:layers"; };
+const floorIcon = (id) => isRoof(id) ? "mdi:home-roof" : (() => { const m = /(\d+)/.exec(id); return m && +m[1] <= 3 ? "mdi:home-floor-" + m[1] : "mdi:layers"; })();
+// the roof floor (kat3, the attic): its choice above the floor button is a triangle, the house's roof, not a box
+const ROOF_FLOOR = 3;
+function isRoof(id) { const m = /(\d+)/.exec(id); return !!m && +m[1] === ROOF_FLOOR; }
+const ROOF_H = 84;
 
 // border colour of a climate on the page (docs/page.md), unless YAML colours it
 const CLIMATE_COLOR = "#e62823";
@@ -365,6 +363,14 @@ const CSS = `${SIDE_CSS}
   .cell.opt ha-icon{--mdc-icon-size:30px;margin-bottom:2px}
   .cell.opt.active{border-color:#ffd66b;color:#ffd66b}
   .cell.opt.kf{box-shadow:0 0 0 3px #fff,0 0 22px #fff}
+  .cell.opt.roof{border:0;border-radius:0;background:none;box-shadow:none;justify-content:flex-end;padding-bottom:7px}
+  .cell.opt.roof svg{position:absolute;left:0;top:0;width:100%;height:100%;z-index:-1;overflow:visible;filter:drop-shadow(0 4px 5px rgba(0,0,0,.55))}
+  .cell.opt.roof polygon{fill:url(#gf-roof);stroke:#a8dcff;stroke-width:2;stroke-linejoin:round}
+  .cell.opt.roof:hover polygon{fill:url(#gf-roof);filter:brightness(1.15)}
+  .cell.opt.roof.active polygon{stroke:#ffd66b}
+  .cell.opt.roof.kf{box-shadow:none}
+  .cell.opt.roof.kf polygon{stroke:#fff;stroke-width:4}
+  .cell.opt.roof.kf svg{filter:drop-shadow(0 0 10px #fff)}
   .btn{position:absolute;width:70px;height:70px;border-radius:50%;padding:0;cursor:pointer;outline:none;pointer-events:auto;
        border:3px solid #e6f5ff;color:#fff;display:flex;align-items:center;justify-content:center;
        background:radial-gradient(circle at 35% 28%,#e4f4ff 0 7%,#63b4ff 20%,#1a67d1 58%,#0a2f70 100%);
@@ -560,7 +566,6 @@ class GungorsFloorCard extends HTMLElement {
     if (i === this._fi) { this._buildDock(); return; }
     this._fi = i;
     this._useFloor();
-    this._room = 0;
     this._cam = 0;
     this._listSig = null;
     this._page = null;                        // until the page's "ready" for the new floor
@@ -1077,18 +1082,17 @@ class GungorsFloorCard extends HTMLElement {
   // ------------------------------------------------------------------ dock (quarter-disc control panel, bottom left)
   _buildDock() {
     // see DOCK: the floor button on the top edge, the cut button on the right edge, the modes along the slanted
-    // edge (heating lowest), each 46 px inside its edge; floor and cut open their choices (up / right) when pressed
+    // edge (sun lowest), each 46 px inside its edge; floor and cut open their choices (up / right) when pressed
     const R = this._config.dock_radius, d = this._dock, H = this._page.H, g = this._dockGeo();
-    if (!DOCK_MODES.some((m) => m.id === this._mode && m.icon)) this._mode = "heating";
+    if (!DOCK_MODES.some((m) => m.id === this._mode && m.icon)) this._mode = "camera";
     const btns = DOCK_MODES.map((m) => {
       const c = g.at[m.id];
       const isFloor = m.id === "floor", isCut = m.id === "cut";
       const single = isFloor ? this._floors.length < 2 : isCut ? this._page.cuts.length < 2
-        : m.id === "heating" ? !this._climates().length : m.id === "camera" ? !this._cameras().length
+        : m.id === "camera" ? !this._cameras().length
         : m.id === "vacuum" && !this._vacuums().length;
       const icon = isFloor ? floorIcon(this._floor) : isCut ? CUT_ICON[this._cut] : m.icon;
       const title = isFloor ? this._floor + (single ? "" : " (next floor)") : isCut ? CUT_TITLE[this._cut]
-        : m.id === "heating" ? "heating" + (single ? ": no climates" : " (next room)")
         : m.id === "camera" ? "cameras" + (single ? ": none on this floor" : " (next camera)")
         : m.id === "vacuum" ? "vacuum" + (single ? ": none on this floor" : " (map)") : m.title;
       if (isFloor || isCut) {                                     // a cell in its corner, its choice in words
@@ -1100,8 +1104,11 @@ class GungorsFloorCard extends HTMLElement {
       return `<button class="btn${single ? " single" : ""}" data-mode="${m.id}" title="${title}"
                 style="left:${c[0] - 35}px;top:${c[1] - 35}px"><ha-icon icon="${icon}"></ha-icon></button>`;
     }).join("");
-    const opts = this._flyOpts().map((o, i) => `<button class="cell opt${o.on ? " active" : ""}" data-opt="${i}" title="${o.title}"
-                style="${rectCss(o.r)}"><ha-icon icon="${o.icon}"></ha-icon><span>${o.label}</span></button>`).join("");
+    const roofSvg = (r) => `<svg viewBox="0 0 ${r.w} ${r.h}" preserveAspectRatio="none"><defs><linearGradient id="gf-roof" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#1d6fd6"/><stop offset="1" stop-color="#0b3a86"/></linearGradient></defs>
+        <polygon points="1,${r.h - 1} ${r.w / 2},1 ${r.w - 1},${r.h - 1}"/></svg>`;
+    const opts = this._flyOpts().map((o, i) => `<button class="cell opt${o.on ? " active" : ""}${o.roof ? " roof" : ""}" data-opt="${i}" title="${o.title}"
+                style="${rectCss(o.r)}">${o.roof ? roofSvg(o.r) : ""}<ha-icon icon="${o.icon}"></ha-icon><span>${o.label}</span></button>`).join("");
     const fc = g.cell.floor, cc = g.cell.cut;
     const P = (r, i) => `${(r.x + r.pts[i][0]).toFixed(1)},${(r.y + r.pts[i][1]).toFixed(1)}`;
     const lines = `<path class="div" d="M${P(fc, 1)}L${P(fc, 2)}L${P(fc, 3)}M${P(cc, 0)}L${P(cc, 3)}L${P(cc, 2)}"/>`;
@@ -1132,11 +1139,6 @@ class GungorsFloorCard extends HTMLElement {
         return;
       }
       if (this._fly) { this._fly = null; this._buildDock(); }
-      if (b.dataset.mode === "heating" && this._mode === "heating") {        // heating again: the next room
-        const n = this._climates().length;
-        if (n < 2) return;
-        this._room = ((this._room || 0) + 1) % n;
-      }
       if (b.dataset.mode === "camera" && this._mode === "camera") {          // cameras again: the next camera
         const n = this._cameras().length;
         if (n < 2) return;
@@ -1152,7 +1154,7 @@ class GungorsFloorCard extends HTMLElement {
       this._compass();
       this._feed();                                                            // the vacuum map: only in the vacuum mode
     }));
-    // the screen in the heating / camera mode: the room's / camera's tap / hold actions, hover highlights it on the page
+    // the screen in the camera / vacuum mode: the camera's / vacuum's tap / hold actions, hover highlights it on the page
     const scr = d.querySelector(".screen"), room = () => this._selected();
     let timer = null, held = false;
     scr.addEventListener("mouseenter", () => { const r = room(); if (r) this._post({ gf: "highlight", id: r.id }); });
@@ -1177,8 +1179,8 @@ class GungorsFloorCard extends HTMLElement {
   _dockGeo() {
     const R = this._config.dock_radius, dy = R - DOCK.side, dx = dy / DOCK.slope, W = Math.round(DOCK.top + dx);
     const L = Math.hypot(dx, dy), u = [dx / L, dy / L], n = [-u[1], u[0]], at = {};
-    ["vacuum", "camera", "sun", "heating"].forEach((id, k) => {   // evenly along the slanted edge, centred on it
-      const t = L / 2 - 10 + (k - 1.5) * DOCK.gap;                // a group in the middle of the edge, clear of the cells
+    ["vacuum", "camera", "sun"].forEach((id, k) => {   // evenly along the slanted edge, centred on it
+      const t = L / 2 - 10 + (k - 1) * DOCK.gap;                // a group in the middle of the edge, clear of the cells
       at[id] = [DOCK.top + u[0] * t + n[0] * 46, u[1] * t + n[1] * 46];
     });
     // the corner cells: bands along the top and the right edge (DOCK.cellH / cellW deep), cut off from the slanted
@@ -1211,8 +1213,11 @@ class GungorsFloorCard extends HTMLElement {
   _flyOpts() {
     if (!this._fly || !this._page) return [];
     const g = this._dockGeo();
-    if (this._fly === "floor") return this._floors.map((f, i) => ({ v: i, on: i === this._fi, icon: floorIcon(f.floor),
-      label: floorLabel(f.floor), title: f.floor, r: { x: 0, y: -(i + 1) * 62, w: DOCK.top, h: 56 } }));
+    if (this._fly === "floor") return this._floors.map((f, i) => {
+      const roof = isRoof(f.floor), h = roof ? ROOF_H : 56;   // the roof: a taller triangle on the boxes below it
+      return { v: i, on: i === this._fi, icon: floorIcon(f.floor), roof,
+        label: floorLabel(f.floor), title: f.floor, r: { x: 0, y: -i * 62 - 6 - h, w: DOCK.top, h } };
+    });
     return this._page.cuts.map((c, i) => ({ v: c, on: c === this._cut, icon: CUT_ICON[c], label: CUT_LABEL[c],
       title: CUT_TITLE[c], r: { x: g.W + 8 + i * 108, y: g.cell.cut.y, w: DOCK.cellW, h: DOCK.side } }));
   }
@@ -1619,23 +1624,6 @@ class GungorsFloorCard extends HTMLElement {
     return a === "toggle" ? "aç/kapa" : a === "camera" ? "canlı izle" : a === "popup" ? "göster" : a && a !== "more-info" && a !== "none" ? "çalıştır" : "";
   }
 
-  // rooms of the heating mode: the floor's climates mapped to Home Assistant, in the order of the YAML
-  _climates() {
-    if (!this._page || !this._hass) return [];
-    const out = [];
-    for (const [id, e] of this._map)
-      if (e && e.selectable !== false && this._page.entities.get(id) === "climate" && this._hass.states[e.entity]) out.push({ id, e });
-    return out;
-  }
-
-  // the room the heating mode shows now (null: the floor has no climates)
-  _climate() {
-    const list = this._climates();
-    if (!list.length) return null;
-    if (!(this._room < list.length)) this._room = 0;
-    return list[this._room];
-  }
-
   // cameras of the camera mode: the floor's page cameras mapped to Home Assistant, in the order of the YAML
   _cameras() {
     if (!this._page || !this._hass) return [];
@@ -1670,9 +1658,9 @@ class GungorsFloorCard extends HTMLElement {
     return list[this._vac];
   }
 
-  // the entity the screen stands for: the room (heating), the camera (camera) or the vacuum (vacuum mode), else null
+  // the entity the screen stands for: the camera (camera) or the vacuum (vacuum mode), else null
   _selected() {
-    return this._mode === "heating" ? this._climate() : this._mode === "camera" ? this._camera()
+    return this._mode === "camera" ? this._camera()
       : this._mode === "vacuum" ? this._vacuumSel() : null;
   }
 
@@ -1751,25 +1739,7 @@ class GungorsFloorCard extends HTMLElement {
     if (!list || !this._hass || !this._page) return;
     const mode = this._mode, hass = this._hass;
     let rows = [], title = DOCK_MODES.find((m) => m.id === mode).title, room = null;
-    if (mode === "heating") {
-      room = this._climate();
-      const n = this._climates().length;
-      if (!room) rows = [{ icon: "mdi:radiator-off", label: "no climates", value: "" }];
-      else {
-        const { id, e } = room, st = hass.states[e.entity], a = st.attributes;
-        const t = (v) => (v == null || !Number.isFinite(Number(v)) ? "-" : (Math.round(Number(v) * 10) / 10).toFixed(1) + "°");
-        const hs = e.humidity && hass.states[e.humidity];
-        const hum = hs && Number.isFinite(Number(hs.state)) ? Number(hs.state) : a.current_humidity;
-        const on = st.state !== "off" && st.state !== "unavailable" && st.state !== "unknown";
-        const act = a.hvac_action || (on ? "-" : "");
-        title = (e.name || id.replace(/_climate$/, "")) + (n > 1 ? " " + (this._room + 1) + "/" + n : "");
-        rows = [{ icon: "mdi:thermometer", label: "current", value: t(a.current_temperature) },
-                { icon: "mdi:target", label: "target", value: on ? t(a.temperature) : "-" },
-                { icon: act === "heating" ? "mdi:fire" : on ? "mdi:radiator" : "mdi:radiator-off", on: act === "heating",
-                  label: "mode", value: st.state + (act && act !== st.state ? "/" + act : "") },
-                { icon: "mdi:water-percent", label: "humidity", value: hum == null || !Number.isFinite(Number(hum)) ? "-" : Math.round(Number(hum)) + "%" }];
-      }
-    } else if (mode === "camera") {
+    if (mode === "camera") {
       room = this._camera();
       const n = this._cameras().length;
       if (!room) rows = [{ icon: "mdi:cctv-off", label: "no cameras", value: "" }];
@@ -1819,7 +1789,7 @@ class GungorsFloorCard extends HTMLElement {
     const cols = this._config.colors || {};
     if (room) d.querySelector(".screen").style.setProperty("--hc", room.e.color
       || (mode === "camera" ? cols.camera || cols.other || OTHER_COLOR
-        : mode === "vacuum" ? cols.vacuum || cols.other || OTHER_COLOR : cols.climate || CLIMATE_COLOR));
+        : cols.vacuum || cols.other || OTHER_COLOR));
     d.querySelector(".title").textContent = title;
     list.innerHTML = rows.map((r) => `<div class="row${r.on ? " on" : ""}">
         <ha-icon icon="${r.icon}"></ha-icon><span class="lbl">${r.label}</span><span class="val">${r.value}</span></div>`).join("");
