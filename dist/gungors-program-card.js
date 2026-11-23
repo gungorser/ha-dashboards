@@ -25,7 +25,7 @@
 // away (remembered per browser): "Zamansız" (timeless ones), "Şu an" (running, paused or
 // preheating now), "Gelecek" (by the next start) and "Geçmiş" (ended, folded at first). Pinned
 // ones (gungors.pin_program, shared by everyone) come first under their heading. The defaults a
-// set rule returns to are gungors configuration (ha-configs program.yaml) and are not shown here.
+// on_start rule returns to are gungors configuration (ha-configs program.yaml) and are not shown here.
 // A running one has pause / resume (gungors.pause_program /
 // resume_program) and stop (a timed one: the running occurrence ends now; a timeless one:
 // gungors.stop_program). A timeless program (no time of its own, e.g. "Bebek uyku", kept by
@@ -39,7 +39,7 @@
 // that range (an entity target without an area gets its own row). Each occurrence is one bar
 // from its start to its end, also across midnight; overlapping ones stack. Tap a bar to edit
 // it, a day in the week header to open that day; "Yeni" adds an entry.
-// Preheat: a program with a set temperature rule (= or ≥) has "Başlangıçta hedefte olsun" in the
+// Preheat: a program with an on_start temperature rule (= or ≥) has "Başlangıçta hedefte olsun" in the
 // editor (on by default; off writes `climate: preheat: false`). A thermostat with gungors preheat
 // then heats early so the room is there by the start: the list shows "Ön ısıtma" (state
 // preheating, pause stops it) and the estimate for the next one, the timeline an orange striped
@@ -48,7 +48,7 @@
 // Layout of this file: constants, value helpers, time and sun, YAML, the program model
 // (parse / dump / rules), rule chips, CSS, then the card: state and loading, the form model,
 // actions (save, delete, services), events, and rendering (list, timeline, form).
-const VERSION = "1.13.0";
+const VERSION = "1.14.0";
 const DEFAULT_CAL = "calendar.program";
 
 const ATTRS = {
@@ -99,6 +99,8 @@ function valueIn(attr, v) {
   if (isObj(v)) {
     const o = { ...v };
     if ("eq" in o) o.eq = one(o.eq);
+    // The older `set` flag is `on_start` now.
+    if ("set" in o) { if (o.set) o.on_start = true; delete o.set; }
     return o;
   }
   return one(v);
@@ -358,8 +360,8 @@ function dumpProgram(target, rules, sun = {}, preheat = true) {
     for (const k of attrs) {
       const v = rules[k];
       const obj = isObj(v);
-      const text = obj && (v.set || !("eq" in v) || Object.keys(v).length > 1)
-        ? `{${["eq", "min", "max"].filter((o) => o in v).map((o) => `${o}: ${yamlScalarText(o === "eq" ? valueOut(k, v[o]) : v[o])}`).join(", ")}${v.set ? ", set: true" : ""}}`
+      const text = obj && (v.on_start || v.allow || !("eq" in v) || Object.keys(v).length > 1)
+        ? `{${["eq", "min", "max"].filter((o) => o in v).map((o) => `${o}: ${yamlScalarText(o === "eq" ? valueOut(k, v[o]) : v[o])}`).join(", ")}${v.on_start ? ", on_start: true" : ""}${v.allow ? `, allow: ${yamlScalarText(v.allow)}` : ""}}`
         : yamlScalarText(valueOut(k, obj ? v.eq : v));
       out.push(`  ${ATTRS[k].name}: ${text}`);
     }
@@ -367,17 +369,19 @@ function dumpProgram(target, rules, sun = {}, preheat = true) {
   }
   return out.join("\n") + "\n";
 }
-// {attr: value | {eq|min|max, set}} -> rule lines [{attr, op, value, set}]
+// {attr: value | {eq|min|max, on_start, allow}} -> rule lines [{attr, op, value, start, allow}]
 function linesOf(rules) {
   const lines = [];
   for (const [attr, v] of Object.entries(rules || {})) {
     if (isObj(v)) {
-      for (const op of ["eq", "min", "max"]) if (op in v) lines.push({ attr, op, value: v[op], set: !!v.set });
-    } else lines.push({ attr, op: "eq", value: v, set: false });
+      for (const op of ["eq", "min", "max"]) {
+        if (op in v) lines.push({ attr, op, value: v[op], start: !!v.on_start, allow: v.allow ? String(v.allow) : "" });
+      }
+    } else lines.push({ attr, op: "eq", value: v, start: false, allow: "" });
   }
   return lines;
 }
-// rule lines [{attr, op, value, set}] (form values) -> {attr: value | {eq|min|max, set}}
+// rule lines [{attr, op, value, start, allow}] (form values) -> {attr: value | {eq|min|max, on_start, allow}}
 function rulesOf(lines) {
   const rules = {};
   for (const l of lines) {
@@ -387,15 +391,21 @@ function rulesOf(lines) {
     if (a.kind === "num") v = num(v);
     if (a.kind === "bool") v = v === true || v === "true";
     if (a.kind === "color") v = Array.isArray(v) ? v : COLOR_NAMES[v] || rgbOf(/^#[0-9a-f]{6}$/i.test(v) ? v : "#ffffff");
-    if (l.op === "eq" && !l.set) rules[l.attr] = v;
+    if (l.op === "eq" && !l.start && !allowOf(l)) rules[l.attr] = v;
     else rules[l.attr] = { ...(isObj(rules[l.attr]) ? rules[l.attr] : {}), [l.op]: v };
   }
-  // One flag per attribute: set when any of its lines is.
-  for (const l of lines) if (l.attr && l.set && isObj(rules[l.attr])) rules[l.attr].set = true;
+  // One flag per attribute: on_start when any of its lines is, allow from its lines.
+  for (const l of lines) {
+    if (!l.attr || !isObj(rules[l.attr])) continue;
+    if (l.start) rules[l.attr].on_start = true;
+    if (allowOf(l)) rules[l.attr].allow = allowOf(l);
+  }
   return rules;
 }
-const isSet = (v) => isObj(v) && !!v.set;
-// The temperature a program preheats for: a set rule's = or ≥ value (null: no preheat).
+// A line's allowance in minutes, null when none (empty, 0 or not a number).
+const allowOf = (l) => { const n = num(l.allow); return n && n > 0 ? n : null; };
+const isSet = (v) => isObj(v) && !!v.on_start;
+// The temperature a program preheats for: an on_start rule's = or ≥ value (null: no preheat).
 function preheatTarget(rules) {
   const v = rules?.temperature;
   if (!isSet(v)) return null;
@@ -404,7 +414,7 @@ function preheatTarget(rules) {
 const preheats = (p) => !!p && !p.timeless && p.preheat !== false && preheatTarget(p.rules) !== null;
 
 // ---------- rule chips ----------
-// A rule as text: "Parlaklık ≤ 40% (uygula)".
+// A rule as text: "Parlaklık ≤ 40% (başta uygula, 1 dk izin)".
 function ruleText(attr, v) {
   const a = ATTRS[attr];
   if (!a) return `${attr}: ${JSON.stringify(v)}`;
@@ -414,7 +424,8 @@ function ruleText(attr, v) {
     if (a.kind === "color") return Array.isArray(x) ? hex(x) : x;
     return numText(a, x);
   };
-  const mode = isSet(v) ? " (uygula)" : "";
+  const flags = isObj(v) ? [v.on_start ? "başta uygula" : "", v.allow ? `${String(v.allow).replace(".", ",")} dk izin` : ""].filter(Boolean) : [];
+  const mode = flags.length ? ` (${flags.join(", ")})` : "";
   if (isObj(v)) {
     if ("eq" in v) return `${a.label} ${val(v.eq)}${mode}`;
     if ("min" in v && "max" in v) return `${a.label} ${val(v.min)}–${val(v.max)}${mode}`;
@@ -454,7 +465,7 @@ function ruleValue(attr, v) {
   if ("min" in v && "max" in v) return esc(`${String(v.min).replace(".", ",")}–${n(v.max)}`);
   return esc("min" in v ? `≥ ${n(v.min)}` : `≤ ${n(v.max)}`);
 }
-// Set rules (the system applies them) are filled chips, let rules outlined.
+// on_start rules (applied at the start) are filled chips, the others outlined.
 const UNREADABLE_CHIP = `<span class="chip warn">Okunamayan açıklama</span>`;
 const ruleChip = (attr, v) =>
   `<span class="chip ${isSet(v) ? "set" : ""}" title="${esc(ruleText(attr, v))}"><ha-icon icon="${ruleIcon(attr, v)}"></ha-icon>${ruleValue(attr, v)}</span>`;
@@ -559,9 +570,11 @@ textarea{min-height:140px;font-family:var(--code-font-family,monospace);font-siz
 .day,.tg{padding:6px 10px;border-radius:6px;border:1px solid var(--divider-color);background:none;color:inherit;font:inherit;cursor:pointer}
 .day{min-width:44px}
 .day.on,.tg.on{background:var(--primary-color);border-color:var(--primary-color);color:var(--text-primary-color,#fff)}
-.rule{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(56px,.5fr) minmax(0,1fr) 52px 32px;gap:6px;align-items:center}
+.rule{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(56px,.5fr) minmax(0,1fr) 44px 56px 32px;gap:6px;align-items:center}
 .rule.hdr{font-size:.75rem;color:var(--secondary-text-color);margin-bottom:-2px}
 .rule.hdr span{grid-column:4;text-align:center}
+.rule.hdr span+span{grid-column:5}
+.rule input.allow{min-width:0;text-align:center}
 .rule .tog{margin:0;display:flex;justify-content:center;align-items:center;cursor:pointer;min-height:40px}
 .rule .tog input{width:18px;height:18px;min-height:0;margin:0;accent-color:var(--primary-color);cursor:pointer}
 .x{background:none;border:0;color:var(--secondary-text-color);cursor:pointer;font-size:1.2rem;padding:4px 8px}
@@ -1094,7 +1107,7 @@ class GungorsProgramCard extends HTMLElement {
       delete: () => this._delete(),
       day: form((f, el) => { f.days = toggle(f.days, el.dataset.d); }),
       tg: form((f, el) => { f.targets = toggle(f.targets, el.dataset.t); }),
-      addrule: form((f) => { f.lines.push({ attr: "", op: "eq", value: "", set: false }); }),
+      addrule: form((f) => { f.lines.push({ attr: "", op: "eq", value: "", start: false, allow: "" }); }),
       delrule: form((f, el) => { f.lines.splice(+el.dataset.i, 1); }),
       toraw: form((f) => { f.rawDesc = this._programText(f); f.rawMode = true; f.rawBad = false; }),
       toform: form((f) => {
@@ -1137,9 +1150,10 @@ class GungorsProgramCard extends HTMLElement {
     if ("ri" in el.dataset) {
       const line = f.lines[+el.dataset.ri];
       const k = el.dataset.rk;
-      if (k === "set") {
+      if (k === "start" || k === "allow") {
         // One flag per attribute: its other lines (min and max) follow.
-        for (const l of f.lines) if (l.attr === line.attr) l.set = el.checked;
+        const v = k === "start" ? el.checked : el.value;
+        for (const l of f.lines) if (l === line || (line.attr && l.attr === line.attr)) l[k] = v;
         if (rerender) this._render();
         return;
       }
@@ -1413,8 +1427,9 @@ class GungorsProgramCard extends HTMLElement {
         const v = Array.isArray(l.value) ? hex(l.value) : COLOR_NAMES[l.value] ? hex(COLOR_NAMES[l.value]) : (l.value || "#ff0000");
         val = `<input type="color" data-ri="${i}" data-rk="value" value="${esc(v)}" aria-label="Renk">`;
       }
-      const sw = `<label class="tog" title="Açık: sistem kuralı kendisi uygular. Kapalı: sadece kurala uymayan değişikliğe izin vermez."><input type="checkbox" data-ri="${i}" data-rk="set" ${l.set ? "checked" : ""} ${a ? "" : "disabled"} aria-label="Uygula"></label>`;
-      return `<div class="rule">${attrSel}${opSel}${val}${sw}<button class="x" data-a="delrule" data-i="${i}" aria-label="Kuralı sil">×</button></div>`;
+      const sw = `<label class="tog" title="Açık: program başlarken cihaz bu kurala getirilir (gerekirse ışık ya da ısıtma açılır)."><input type="checkbox" data-ri="${i}" data-rk="start" ${l.start ? "checked" : ""} ${a ? "" : "disabled"} aria-label="Başta uygula"></label>`;
+      const allow = `<input type="number" class="allow" data-ri="${i}" data-rk="allow" min="1" max="1440" step="1" value="${esc(l.allow || "")}" placeholder="–" ${a ? "" : "disabled"} title="Dolu: kurala aykırı değişikliğe bu kadar dakika izin verilir, sonra cihaz önceki haline döner." aria-label="Geçici izin (dakika)">`;
+      return `<div class="rule">${attrSel}${opSel}${val}${sw}${allow}<button class="x" data-a="delrule" data-i="${i}" aria-label="Kuralı sil">×</button></div>`;
     }).join("");
     const hint = f.targets.length ? "" : `<div class="note">Önce oda ya da cihaz seç; özellikler onların türüne göre listelenir.</div>`;
     const target = f.timeless ? null : preheatTarget(rulesOf(f.lines));
@@ -1422,9 +1437,9 @@ class GungorsProgramCard extends HTMLElement {
     const pre = target === null || num(target) === null ? "" : `<div class="pre-box">
         <label class="check"><input type="checkbox" data-f="preheat" data-rr ${f.preheat !== false ? "checked" : ""}><ha-icon icon="${PREHEAT_ICON}"></ha-icon>Başlangıçta hedefte olsun (ön ısıtma)</label>
         <div class="note">Isıtma, oda ${esc(at)} ${esc(target)}°'de olsun diye gerektiği kadar erken başlar (en fazla 3 saat). Ön ısıtma programın parçasıdır: duraklatılınca durur.</div></div>`;
-    return `<div class="field"><label>Kurallar</label><div class="form" style="gap:6px">${f.lines.length ? `<div class="rule hdr" aria-hidden="true"><span>Uygula</span></div>` : ""}${lines}</div>${hint}${pre}
+    return `<div class="field"><label>Kurallar</label><div class="form" style="gap:6px">${f.lines.length ? `<div class="rule hdr" aria-hidden="true"><span>Başta</span><span>İzin dk</span></div>` : ""}${lines}</div>${hint}${pre}
       <button class="link" data-a="addrule" style="margin-top:6px">+ Kural ekle</button>
-      <div class="note">Uygula açık: sistem kuralı kendisi uygular (gerekirse ışığı ya da ısıtmayı açar) ve program bitince cihaz varsayılana döner (ışık kapalı, renk beyaz, ısıtma kapalı, perde gündüz açık / gece kapalı). Kapalı: kapalı cihaz kurala uyar sayılır, sadece kurala uymayan değişikliğe izin verilmez; bitince kural kalkar.</div></div>`;
+      <div class="note">Her kural, program sürerken kurala aykırı değişikliği engeller (kapalı ışık ya da ısıtma kurala uyar sayılır). Başta: program başlarken cihaz kurala getirilir (gerekirse ışık ya da ısıtma açılır), sonra kapatmak serbesttir; program bitince cihaz varsayılana döner (ışık kapalı, renk beyaz, ısıtma kapalı, perde gündüz açık / gece kapalı). İzin dk: kullanıcı ya da duvar düğmesi kurala aykırı bir şey yaparsa o kadar dakika izin verilir, sonra cihaz önceki haline döner.</div></div>`;
   }
 
   // One side's time: a clock time, or sunrise / sunset with an offset in minutes.
